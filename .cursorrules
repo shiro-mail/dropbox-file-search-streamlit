@@ -16,9 +16,10 @@
     - 文字検索：入力された文章からキーワードを見つけて、そのキーワードをファイルから探索する。例えば「手順書に関するファイルは？」という指示の場合のキーワードは「手順書」になります。
     - ファイル操作：例えば、「PDFを削除して」という指示が出た場合PDFファイルをリストから外します。「関連度の30％以下は削除して」の場合は関連度の30％以下のファイルはリストから削除します。
 - 「ファイルを削除」とか「ファイルを除外」とかの指示文はファイルリストからの削除であって、実際にDropBoxからファイルを削除することではありません
+- APIキー等の秘密情報はconfig.pyに記載して、.gitignoreに追加してください。
 
 #技術スタック
-Python + Streamlitで開発.。
+Python + Streamlitで開発。
 
 # OpenAI認証情報
 OPENAI_API_KEY = "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"

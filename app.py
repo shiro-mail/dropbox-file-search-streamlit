@@ -64,10 +64,21 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 prompt = st.chat_input("指示を出して下さい")
+# if prompt:
+#     st.session_state.messages.append({"role": "user", "content": prompt})
+
+#     # OpenAI処理に変更
+#     response = process_user_instruction(prompt)
+#     st.session_state.messages.append({"role": "assistant", "content": response})
+
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
-
-    response = f"指示は'{prompt}'ですね"
+    
+    # キーワード抽出テスト
+    from keyword_extractor import extract_keywords
+    keywords = extract_keywords(prompt)
+    
+    response = f"抽出されたキーワード: {', '.join(keywords)}"
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 for message in st.session_state.messages:
