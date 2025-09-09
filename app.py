@@ -78,7 +78,12 @@ if prompt:
     from keyword_extractor import extract_keywords
     keywords = extract_keywords(prompt)
     
-    response = f"抽出されたキーワード: {', '.join(keywords)}"
+    # キーワードと関連度を表示
+    keyword_text = ""
+    for kw in keywords:
+        keyword_text += f"・{kw['keyword']} (関連度: {kw['relevance']}%)\n"
+
+    response = f"抽出されたキーワード:\n{keyword_text}"
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 for message in st.session_state.messages:
