@@ -74,16 +74,29 @@ prompt = st.chat_input("指示を出して下さい")
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # キーワード抽出テスト
-    from keyword_extractor import extract_keywords
-    keywords = extract_keywords(prompt)
+    # # キーワード抽出テスト
+    # from keyword_extractor import extract_keywords
+    # keywords = extract_keywords(prompt)
     
-    # キーワードと関連度を表示
-    keyword_text = ""
-    for kw in keywords:
-        keyword_text += f"・{kw['keyword']} (関連度: {kw['relevance']}%)\n"
+    # # キーワードと関連度を表示
+    # keyword_text = ""
+    # for kw in keywords:
+    #     keyword_text += f"・{kw['keyword']} (関連度: {kw['relevance']}%)\n"
 
-    response = f"抽出されたキーワード:\n{keyword_text}"
+    # response = f"抽出されたキーワード:\n{keyword_text}"
+
+    # ファイル検索
+    from file_searcher import search_files
+    results = search_files(selected_folder, prompt)
+    
+    if results:
+        response = f"検索結果: {len(results)}件のファイルが見つかりました\n\n"
+        for i, result in enumerate(results, 1):
+            response += f"{i}. {result['file']['name']}\n"
+    else:
+        response = "該当するファイルが見つかりませんでした"
+
+
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 for message in st.session_state.messages:
