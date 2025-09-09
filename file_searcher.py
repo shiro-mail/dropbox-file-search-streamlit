@@ -4,7 +4,7 @@ import PyPDF2
 import docx
 import openpyxl
 import xlrd # .xlsファイル対応のために追加
-from dropbox_client import get_dropbox_client
+from dropbox_client import get_dropbox_client, get_files_in_folder 
 from keyword_extractor import extract_keywords
 
 def search_files(folder_path, user_input):
@@ -100,22 +100,23 @@ def extract_text_simple(file_content, filename):
     """ファイルの内容からテキストを抽出 (PDF, TXT, Excel, Word対応)"""
     try:
         text = ""
-        file_extension = os.path.splitext(filename).lower()
+        _, file_ext =  os.path.splitext(filename)
+        file_ext = file_ext.lower() # ← ここを修正
 
-        if file_extension.endswith('.pdf'):
+        if file_ext.endswith('.pdf'):
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
             for page in pdf_reader.pages:
                 text += page.extract_text() + "\n"
             
-        elif file_extension.endswith('.txt'):
+        elif file_ext.endswith('.txt'):
             text = file_content.decode('utf-8', errors='ignore')
             
-        elif file_extension.endswith('.docx'):
+        elif file_ext.endswith('.docx'):
             doc = docx.Document(io.BytesIO(file_content))
             for paragraph in doc.paragraphs:
                 text += paragraph.text + "\n"
             
-        elif file_extension.endswith('.xlsx'):
+        elif file_ext.endswith('.xlsx'):
             workbook = openpyxl.load_workbook(io.BytesIO(file_content))
             for sheet_name in workbook.sheetnames:
                 sheet = workbook[sheet_name]
@@ -125,7 +126,7 @@ def extract_text_simple(file_content, filename):
                     if row_text.strip():
                         text += row_text + "\n"
             
-        elif file_extension.endswith('.xls'):
+        elif file_ext.endswith('.xls'):
             workbook = xlrd.open_workbook(file_contents=file_content)
             for sheet_name in workbook.sheet_names():
                 sheet = workbook.sheet_by_name(sheet_name)
