@@ -1,0 +1,48 @@
+
+##DropBox ファイル検索システム
+
+#アプリ目的入力ボックスにユーザーが指示することで、DropBox内の特定フォルダから目的のファイルを検索してリスト化します。
+
+# 条件
+- Chatで指示した内容を解析して、ファイルの内容およびファイル名に含まれる単語から判断してリスト化する。
+- ファイルの内容の解析に関しては、OpenAIを利用して曖昧検索や意味を拡張することで、ファイルを抽出します。
+- Chat式にして、検索結果のファイル名をリストで表示します。
+- リスト表示されたファイル名はリンク式にしてクリックしたらファイルの概要を表示します。
+- 2回目以降のChat指示の対象はそれまでのファイルリストです。そこからさらに絞り込んで次のファイルリストとします。（これは2回目以降の検索は全体のファイルから検索しないということを意味します）
+- このファイルリストからの絞り込みは「リセット」ボタンを押すまで継続します。
+- ファイルはExcel(.xls及び.xlsx),PDF,TXT,Wordです。
+- LLMが内容を解析した結果の関連度をファイル名の行に表示してください。その関連度をファイルリストの表示条件に結びつけなくてもいいです。
+- トグルスイッチを**目立つところ**に設置して、「文字検索」と「ファイル操作」に分けます。二つのモードではいずれもLLMを使って処理をしますが、違いは下記の通りです。
+    - 文字検索：入力された文章からキーワードを見つけて、そのキーワードをファイルから探索する。例えば「手順書に関するファイルは？」という指示の場合のキーワードは「手順書」になります。
+    - ファイル操作：例えば、「PDFを削除して」という指示が出た場合PDFファイルをリストから外します。「関連度の30％以下は削除して」の場合は関連度の30％以下のファイルはリストから削除します。
+- 「ファイルを削除」とか「ファイルを除外」とかの指示文はファイルリストからの削除であって、実際にDropBoxからファイルを削除することではありません
+
+#技術スタック
+Python + Streamlitで開発.。
+
+# OpenAI認証情報
+OPENAI_API_KEY = "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"
+
+# Dropbox OAuth2認証情報
+DROPBOX_CLIENT_ID = "k6c7mtgu9s3n8hv"
+DROPBOX_CLIENT_SECRET = "aibtk1d8oa4cxq9"
+DROPBOX_REFRESH_TOKEN = "ZdrVd9ZygyYAAAAAAAAAAalqPKx_WYC7nmn_gALrpoxeKDoP4TmHlW9zYBnZIEMp"
+
+# 指示を出す入力ボックスには下記のロジックを使って下さい
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+prompt = st.chat_input("指示を出して下さい")
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    response = f"指示は'{prompt}'ですね"
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+
+
+
+

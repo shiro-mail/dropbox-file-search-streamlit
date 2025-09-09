@@ -1,0 +1,15 @@
+
+/* トグルスイッチを青色に変更 */
+.st-bu {
+    background-color: rgb(31, 119, 180) !important;
+}
+
+/* アクティブ状態も青色に */
+.st-bu[aria-checked="true"] {
+    background-color: rgb(0, 102, 204) !important;
+}
+
+/* より具体的な指定（サイドバー用） */
+section[data-testid="stSidebar"] .st-bu {
+    background-color: rgb(31, 119, 180) !important;
+}
