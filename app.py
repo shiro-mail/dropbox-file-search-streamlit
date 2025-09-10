@@ -52,6 +52,10 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "filtered_files" not in st.session_state:
     st.session_state.filtered_files = None
+if "selected_file" not in st.session_state:
+    st.session_state.selected_file = None
+if "file_content_preview" not in st.session_state:
+    st.session_state.file_content_preview = None
 
 # DropBox APIでフォルダ取得
 folder_list = get_dropbox_folders()  
@@ -84,12 +88,20 @@ if folder_list:
             st.write(f"ファイル数: {len(files)}個")
             
             # ファイル一覧をテーブル形式で表示
-            for file in files:
+            for i, file in enumerate(files):
                 col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    # ファイル名をクリック可能にする（後で概要表示機能追加予定）
-                    st.write(f"📄 **{file['name']}**")
+                    # ファイル名をクリック可能なボタンに変更
+                    if st.button(f"📄 {file['name']}", key=f"file_{i}", help="クリックしてファイル内容を表示"):
+                        st.session_state.selected_file = file
+                        # ファイル内容を取得して先頭1000文字を表示
+                        file_content = download_file_content(file['path'])
+                        if file_content:
+                            text = extract_text_simple(file_content, file['name'])
+                            st.session_state.file_content_preview = text[:1000] if text else "ファイルの内容を読み取れませんでした。"
+                        else:
+                            st.session_state.file_content_preview = "ファイルの内容を取得できませんでした。"
                 
                 with col2:
                     # ファイルサイズを表示
@@ -112,6 +124,28 @@ else:
 
 # 指示ボックス
 prompt = st.chat_input("指示を出して下さい")
+
+
+# ファイル内容表示エリア（プロンプトの下に配置）
+if st.session_state.selected_file and st.session_state.file_content_preview:
+    st.markdown("---")
+    st.subheader(f"📋 ファイル内容プレビュー: {st.session_state.selected_file['name']}")
+    st.text_area(
+        "ファイル内容（先頭1000文字）",
+        value=st.session_state.file_content_preview,
+        height=200,
+        disabled=True
+    )
+    
+    # プレビューを閉じるボタン
+    if st.button("❌ プレビューを閉じる"):
+        st.session_state.selected_file = None
+        st.session_state.file_content_preview = None
+        st.rerun()
+
+
+
+
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -153,10 +187,13 @@ for message in st.session_state.messages:
 if prompt:
     st.rerun()
 
-# リセットボタン
+
+# リセットボタン（サイドバー）
 if st.sidebar.button("🔄 リセット"):
     st.session_state.filtered_files = None
     st.session_state.messages = []
+    st.session_state.selected_file = None
+    st.session_state.file_content_preview = None
     st.rerun()
 
 # サイドバーにテストボタンを追加
