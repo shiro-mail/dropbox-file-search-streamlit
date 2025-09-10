@@ -7,6 +7,13 @@ OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 # OpenAI クライアントの初期化
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
+# 追加: 埋め込み取得
+def get_embedding(text: str) -> list[float]:
+    """text-embedding-3-small を使って埋め込みベクトルを返す。"""
+    resp = client.embeddings.create(model="text-embedding-3-small", input=text)
+    return resp.data[0].embedding
+
+
 def test_openai_connection():
     """OpenAI接続テスト"""
     try:
@@ -20,6 +27,7 @@ def test_openai_connection():
         return response.choices[0].message.content
     except Exception as e:
         return f"接続エラー: {str(e)}"
+
 
 def process_user_instruction(prompt):
     """ユーザーの指示を処理"""

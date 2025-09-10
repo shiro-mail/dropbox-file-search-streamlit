@@ -9,6 +9,7 @@ from dropbox_client import test_connection, get_dropbox_folders, get_subfolders,
 from openai_client import test_openai_connection, process_user_instruction
 from file_searcher import search_files_comprehensive, download_file_content, extract_text_simple
 from keyword_extractor import extract_keywords
+from indexer import build_index, search_fts, search_vector
 
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
@@ -210,6 +211,29 @@ if folder_list:
 
 else:
     st.sidebar.write('🔴接続解除')
+
+
+# サイドバー: インデックス操作
+with st.sidebar.expander("インデックス" , expanded=False):
+    if st.button("📚 このフォルダをインデックス化/更新"):
+        with st.spinner("インデックスを作成/更新しています..."):
+            target = st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)
+            build_index(target)
+        st.success("インデックス更新が完了しました")
+
+    query = st.text_input("高速検索（インデックス）", value="")
+    if query:
+        # FTS と ベクターの両方を叩いてマージ（簡易）
+        fts_hits = search_fts(query, limit=20)
+        vec_hits = search_vector(query, k=10)
+        merged_ids = []
+        for hid in [h[0] for h in fts_hits + vec_hits]:
+            if hid not in merged_ids:
+                merged_ids.append(hid)
+        if merged_ids:
+            st.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
+        else:
+            st.info("インデックスにヒットしませんでした")
 
 
 # 指示ボックス
