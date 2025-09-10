@@ -12,7 +12,7 @@ except Exception:
 import docx
 import openpyxl
 import xlrd # .xlsファイル対応のために追加
-from dropbox_client import get_dropbox_client, get_files_in_folder 
+from dropbox_client import get_dropbox_client, get_files_in_folder, get_subfolders 
 from keyword_extractor import extract_keywords
 # OCR 用ライブラリ（存在しなければ無視）
 try:
@@ -22,8 +22,28 @@ except Exception:
     pytesseract = None
     Image = None
 
+# 再帰的にフォルダ配下のファイルを列挙
+
+def _iter_files_recursive(root: str):
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        # ファイル
+        for f in get_files_in_folder(cur):
+            yield f
+        # サブフォルダ
+        try:
+            subs = get_subfolders(cur) or []
+        except Exception:
+            subs = []
+        for s in subs:
+            p = s.get('full_path') or s.get('path')
+            if p:
+                stack.append(p)
+
+
 def search_files(folder_path, user_input):
-    """指定フォルダ内でファイルを検索"""
+    """指定フォルダ内でファイルを検索（再帰）"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
     
@@ -35,13 +55,12 @@ def search_files(folder_path, user_input):
     if exclude_keywords:
         return search_files_exclude(folder_path, exclude_keywords)
     
-    
     # 関連度トップのキーワードを取得
     top_keyword = max(keywords, key=lambda x: x['relevance'])
     search_term = top_keyword['keyword']
     
-    # ファイル一覧を取得
-    files = get_files_in_folder(folder_path)
+    # 再帰でファイル一覧を取得
+    files = list(_iter_files_recursive(folder_path))
     
     # ファイル名で検索
     search_results = []
@@ -52,12 +71,12 @@ def search_files(folder_path, user_input):
                 'match_type': 'filename',
                 'search_term': search_term
             })
-
+    
     return search_results
 
 
 def search_files_comprehensive(folder_path, user_input):
-    """ファイル名と内容の両方で検索"""
+    """ファイル名と内容の両方で検索（再帰）"""
     # ファイル名検索
     filename_results = search_files(folder_path, user_input)
     
@@ -79,7 +98,7 @@ def search_files_comprehensive(folder_path, user_input):
 
 
 def search_files_by_content(folder_path, user_input):
-    """ファイル内容で検索"""
+    """ファイル内容で検索（再帰）"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
     if not keywords:
@@ -88,8 +107,8 @@ def search_files_by_content(folder_path, user_input):
     top_keyword = max(keywords, key=lambda x: x['relevance'])
     search_term = top_keyword['keyword']
     
-    # ファイル一覧を取得
-    files = get_files_in_folder(folder_path)
+    # 再帰でファイル一覧を取得
+    files = list(_iter_files_recursive(folder_path))
     
     # ファイル内容で検索
     content_results = []
@@ -97,7 +116,7 @@ def search_files_by_content(folder_path, user_input):
         # ファイルをダウンロード
         file_content = download_file_content(file['path'])
         if file_content:
-            # テキスト抽出（簡単な実装）
+            # テキスト抽出（OCRフォールバック込み）
             text = extract_text_simple(file_content, file['name'])
             if search_term.lower() in text.lower():
                 content_results.append({
