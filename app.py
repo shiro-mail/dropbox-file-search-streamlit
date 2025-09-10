@@ -85,7 +85,7 @@ if folder_list:
             
             # ファイル一覧をテーブル形式で表示
             for i, file in enumerate(files):
-                col1, col2, col3 = st.columns([3, 1, 1])
+                col1, col2, col3 = st.columns([10, 1, 2])
                 
                 with col1:
                     # ファイル名をクリック可能なボタンに変更
