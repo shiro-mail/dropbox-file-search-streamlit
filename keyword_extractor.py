@@ -18,7 +18,6 @@ def extract_keywords(user_input):
     """
 
     response = process_user_instruction(prompt)
-    print(f"OpenAI response: {response}")  # デバッグ用
     return parse_keywords_with_relevance(response)
 
 def parse_keywords_with_relevance(response):

@@ -1,6 +1,14 @@
 import os
 import io
 import PyPDF2
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
+try:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text
+except Exception:
+    pdfminer_extract_text = None
 import docx
 import openpyxl
 import xlrd # .xlsファイル対応のために追加
@@ -11,10 +19,8 @@ def search_files(folder_path, user_input):
     """指定フォルダ内でファイルを検索"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
-    print(f"Extracted keywords: {keywords}")  # デバッグ用
     
     if not keywords:
-        print("No keywords extracted")  # デバッグ用
         return []
 
     # 除外記法のチェック
@@ -26,25 +32,20 @@ def search_files(folder_path, user_input):
     # 関連度トップのキーワードを取得
     top_keyword = max(keywords, key=lambda x: x['relevance'])
     search_term = top_keyword['keyword']
-    print(f"Search term: {search_term}")  # デバッグ用
     
     # ファイル一覧を取得
     files = get_files_in_folder(folder_path)
-    print(f"Total files: {len(files)}")  # デバッグ用
     
     # ファイル名で検索
     search_results = []
     for file in files:
-        print(f"Checking file: {file['name']}")  # デバッグ用
         if search_term.lower() in file['name'].lower():
-            print(f"Match found: {file['name']}")  # デバッグ用
             search_results.append({
                 'file': file,
                 'match_type': 'filename',
                 'search_term': search_term
             })
 
-    print(f"Search results: {len(search_results)}")  # デバッグ用
     return search_results
 
 
@@ -107,7 +108,6 @@ def download_file_content(file_path):
         _, response = dbx.files_download(file_path)
         return response.content
     except Exception as e:
-        print(f"ファイルダウンロードエラー: {e}")
         return None
 
 def extract_text_simple(file_content, filename):
@@ -118,9 +118,39 @@ def extract_text_simple(file_content, filename):
         file_ext = file_ext.lower() # ← ここを修正
 
         if file_ext.endswith('.pdf'):
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+            # 1) PyMuPDF（文字化け耐性が高い）
+            extracted = ""
+            try:
+                if fitz is not None:
+                    with fitz.open(stream=file_content, filetype="pdf") as doc:
+                        for p in doc:
+                            extracted += p.get_text("text") or ""
+            except Exception:
+                extracted = extracted or ""
+
+            # 2) PyPDF2 フォールバック
+            if not extracted:
+                try:
+                    pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+                    for page in pdf_reader.pages:
+                        page_text = None
+                        try:
+                            page_text = page.extract_text()
+                        except Exception:
+                            page_text = None
+                        if page_text:
+                            extracted += page_text + "\n"
+                except Exception:
+                    pass
+
+            # 3) pdfminer.six 最終フォールバック
+            if not extracted and pdfminer_extract_text is not None:
+                try:
+                    extracted = pdfminer_extract_text(io.BytesIO(file_content)) or ""
+                except Exception:
+                    extracted = extracted or ""
+
+            text += extracted
             
         elif file_ext.endswith('.txt'):
             text = file_content.decode('utf-8', errors='ignore')
@@ -154,13 +184,11 @@ def extract_text_simple(file_content, filename):
                     if row_data:
                         text += " ".join(row_data) + "\n"
         else:
-            print(f"未対応ファイル形式: {filename}")
             return "" # 未対応のファイル形式は空文字列を返す
         
         return text
             
     except Exception as e:
-        print(f"テキスト抽出エラー ({filename}): {e}")
         return ""
 
 

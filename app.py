@@ -3,6 +3,7 @@ import PyPDF2
 import io
 import openpyxl
 import docx
+import os
 from dropbox_client import test_connection, get_dropbox_folders, get_subfolders, get_files_in_folder
 from openai_client import test_openai_connection, process_user_instruction
 from file_searcher import search_files_comprehensive, download_file_content, extract_text_simple
@@ -52,6 +53,10 @@ if "selected_file" not in st.session_state:
     st.session_state.selected_file = None
 if "file_content_preview" not in st.session_state:
     st.session_state.file_content_preview = None
+if "current_folder" not in st.session_state:
+    st.session_state.current_folder = None
+if "selected_folder_prev" not in st.session_state:
+    st.session_state.selected_folder_prev = None
 
 # DropBox APIでフォルダ取得
 folder_list = get_dropbox_folders()  
@@ -69,16 +74,47 @@ if folder_list:
         index=0
     )
     
-    # 選択したフォルダのファイル一覧をMain画面に表示
+    # フォルダ選択の変更検知と現在フォルダの初期化
+    if st.session_state.selected_folder_prev != selected_folder:
+        st.session_state.selected_folder_prev = selected_folder
+        st.session_state.current_folder = selected_folder
+        st.session_state.filtered_files = None
+    
+    # 選択したフォルダ配下のサブフォルダとファイルをMain画面に表示
     if selected_folder:
+        # 現在の表示パス（選択フォルダ直下からナビゲーション）
+        current_path = st.session_state.current_folder or selected_folder
+        st.markdown(f"###### 📂 現在のフォルダ: {current_path}")
+
+        # 親フォルダへ戻る（選択フォルダより上には戻らない）
+        if current_path and current_path != selected_folder:
+            parent_path = os.path.dirname(current_path.rstrip('/'))
+            if not parent_path or not parent_path.startswith(selected_folder):
+                parent_path = selected_folder
+            if st.button("⬆️ 親フォルダへ"):
+                st.session_state.current_folder = parent_path
+                st.session_state.filtered_files = None
+                st.rerun()
+
         # 絞り込まれたファイルリストがある場合はそれを使用、なければ全ファイルを表示
         if st.session_state.filtered_files is not None:
             files = st.session_state.filtered_files
-            st.markdown(f"##### 📂 {selected_folder} 内のファイル（絞り込み結果）")
+            st.markdown(f"##### 📄 ファイル（絞り込み結果）")
             st.info(f"🔍 検索結果: {len(files)}件のファイルが表示されています")
         else:
-            files = get_files_in_folder(selected_folder)
-            st.markdown(f"##### 📂 {selected_folder} 内のファイル")
+            # サブフォルダ表示
+            subfolders = get_subfolders(current_path)
+            if subfolders:
+                st.markdown("##### 📁 サブフォルダ")
+                for i, folder in enumerate(subfolders):
+                    if st.button(f"📁 {folder['name']}", key=f"subfolder_{folder['full_path']}"):
+                        st.session_state.current_folder = folder['full_path']
+                        st.session_state.filtered_files = None
+                        st.rerun()
+            
+            # ファイル表示
+            files = get_files_in_folder(current_path)
+            st.markdown(f"##### 📄 ファイル")
         
         if files:
             st.write(f"ファイル数: {len(files)}個")

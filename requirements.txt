@@ -9,3 +9,5 @@ openpyxl
 xlrd
 httpx
 protobuf
+PyMuPDF
+pdfminer.six
