@@ -8,12 +8,24 @@ DROPBOX_REFRESH_TOKEN = st.secrets["DROPBOX_REFRESH_TOKEN"]
 
 
 def get_dropbox_client():
-    """Dropboxクライアントを取得"""
-    return dropbox.Dropbox(
+    """Dropboxクライアントを取得（チームスペースRootに自動切替）"""
+    dbx = dropbox.Dropbox(
         oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
         app_key=DROPBOX_CLIENT_ID,
         app_secret=DROPBOX_CLIENT_SECRET
     )
+    # チームスペース（"三友工業株式会社 Dropbox"）直下にアクセスできるよう、
+    # 取得したアカウント情報から root_namespace にパスルートを切り替える
+    try:
+        account = dbx.users_get_current_account()
+        root_info = getattr(account, "root_info", None)
+        root_ns_id = getattr(root_info, "root_namespace_id", None)
+        if root_ns_id:
+            dbx = dbx.with_path_root(dropbox.common.PathRoot.namespace_id(root_ns_id))
+    except Exception:
+        # 切替に失敗しても従来のルートで継続
+        pass
+    return dbx
 
 def test_connection():
     """接続テスト"""
@@ -27,7 +39,7 @@ def get_dropbox_folders(path=""):
     
     try:
         # フォルダ一覧を取得
-        result = dbx.files_list_folder(path)
+        result = dbx.files_list_folder(path, include_mounted_folders=True)
         folders = []
         
         for entry in result.entries:
@@ -45,7 +57,7 @@ def get_subfolders(path=""):
     
     try:
         # フォルダ一覧を取得
-        result = dbx.files_list_folder(path)
+        result = dbx.files_list_folder(path, include_mounted_folders=True)
         subfolders = []
         
         for entry in result.entries:

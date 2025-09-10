@@ -9,6 +9,8 @@ from openai_client import test_openai_connection, process_user_instruction
 from file_searcher import search_files_comprehensive, download_file_content, extract_text_simple
 from keyword_extractor import extract_keywords
 
+ROOT_PATH = st.secrets.get("ROOT_PATH", "")
+
 def search_from_filtered_files(filtered_files, user_input):
     """絞り込まれたファイルリストから検索"""
     # キーワード抽出
@@ -59,7 +61,8 @@ if "selected_folder_prev" not in st.session_state:
     st.session_state.selected_folder_prev = None
 
 # DropBox APIでフォルダ取得
-folder_list = get_dropbox_folders()  
+base_path = ROOT_PATH  # 例: "/三友工業株式会社 Dropbox"
+folder_list = [base_path] + get_dropbox_folders(base_path)  # ルート自身＋直下のフォルダ
 
 # 既存のフォルダ選択コードの後に追加
 if folder_list:
@@ -156,6 +159,31 @@ else:
 # 指示ボックス
 prompt = st.sidebar.chat_input("指示を出して下さい")
 
+if prompt:
+    if not folder_list or not selected_folder:
+        st.sidebar.warning("Dropboxに接続し、フォルダを選択してください。")
+    else:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # 検索：現在表示中のフォルダを対象に実行
+        current_path = (st.session_state.current_folder or selected_folder)
+        if st.session_state.filtered_files is None:
+            results = search_files_comprehensive(current_path, prompt)
+        else:
+            results = search_from_filtered_files(st.session_state.filtered_files, prompt)
+
+        # 結果整形と履歴反映
+        if results:
+            st.session_state.filtered_files = [result['file'] for result in results]
+            response = f"検索結果: {len(results)}件のファイルが見つかりました\n\n"
+            for i, result in enumerate(results, 1):
+                match_type = "ファイル名" if result['match_type'] == 'filename' else "内容"
+                response += f"{i}. {result['file']['name']} ({match_type}でマッチ)\n"
+        else:
+            response = "該当するファイルが見つかりませんでした"
+
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
 
 # ファイル内容表示エリア（プロンプトの下に配置）
 if st.session_state.selected_file and st.session_state.file_content_preview:
@@ -178,36 +206,7 @@ if st.session_state.selected_file and st.session_state.file_content_preview:
 
 
 
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    # キーワード抽出
-    keywords = extract_keywords(prompt)
-    if keywords:
-        search_term = max(keywords, key=lambda x: x['relevance'])['keyword']
-    else:
-        search_term = "検索キーワードなし"
-
-    # 統合検索
-    if st.session_state.filtered_files is None:
-        # 初回検索：全ファイルから検索
-        results = search_files_comprehensive(selected_folder, prompt)
-    else:
-        # 2回目以降：絞り込まれたファイルリストから検索
-        results = search_from_filtered_files(st.session_state.filtered_files, prompt)
-    
-    if results:
-        # 検索結果をファイルリストとして保存
-        st.session_state.filtered_files = [result['file'] for result in results]
-        
-        response = f"検索結果: {len(results)}件のファイルが見つかりました\n\n"
-        for i, result in enumerate(results, 1):
-            match_type = "ファイル名" if result['match_type'] == 'filename' else "内容"
-            response += f"{i}. {result['file']['name']} ({match_type}でマッチ)\n"
-    else:
-        response = "該当するファイルが見つかりませんでした"
-    
-    st.session_state.messages.append({"role": "assistant", "content": response})
+ 
 
 # チャット履歴表示
 for message in st.session_state.messages:
