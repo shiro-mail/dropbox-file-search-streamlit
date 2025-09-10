@@ -11,3 +11,5 @@ httpx
 protobuf
 PyMuPDF
 pdfminer.six
+pytesseract
+Pillow
