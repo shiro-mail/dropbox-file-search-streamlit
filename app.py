@@ -159,7 +159,7 @@ if folder_list:
             
             # ファイル一覧をテーブル形式で表示
             for i, file in enumerate(files):
-                col1, col2, col3 = st.columns([10, 1, 2])
+                col1, col2, col3 = st.columns([10, 2, 2])
                 
                 with col1:
                     # ファイル名をクリック可能なボタンに変更
@@ -175,7 +175,7 @@ if folder_list:
                                 try:
                                     with fitz.open(stream=file_content, filetype="pdf") as doc:
                                         # 先頭3ページを画像化（必要に応じてページ数を変更）
-                                        for page_num in range(min(30, doc.page_count)):
+                                        for page_num in range(min(3, doc.page_count)):
                                             page = doc.load_page(page_num)
                                             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍解像度
                                             images.append(pix.pil_tobytes(format="PNG"))

@@ -163,7 +163,7 @@ def extract_text_simple(file_content, filename):
                     with fitz.open(stream=file_content, filetype="pdf") as doc:
                         ocr_text = ""
                         # 最初の数ページのみOCR（処理負荷軽減）
-                        for page_num in range(min(doc.page_count, 2)):
+                        for page_num in range(min(doc.page_count, 10)):
                             page = doc.load_page(page_num)
                             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
