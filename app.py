@@ -4,12 +4,14 @@ import io
 import openpyxl
 import docx
 import os
+import config
 from dropbox_client import test_connection, get_dropbox_folders, get_subfolders, get_files_in_folder
 from openai_client import test_openai_connection, process_user_instruction
 from file_searcher import search_files_comprehensive, download_file_content, extract_text_simple
 from keyword_extractor import extract_keywords
 
-ROOT_PATH = st.secrets.get("ROOT_PATH", "")
+
+ROOT_PATH = getattr(config, "ROOT_PATH", "")
 
 def search_from_filtered_files(filtered_files, user_input):
     """絞り込まれたファイルリストから検索"""
