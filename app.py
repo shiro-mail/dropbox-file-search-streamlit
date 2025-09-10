@@ -78,11 +78,11 @@ if folder_list:
         # 絞り込まれたファイルリストがある場合はそれを使用、なければ全ファイルを表示
         if st.session_state.filtered_files is not None:
             files = st.session_state.filtered_files
-            st.subheader(f"📂 {selected_folder} 内のファイル（絞り込み結果）")
+            st.markdown(f"##### 📂 {selected_folder} 内のファイル（絞り込み結果）")
             st.info(f"🔍 検索結果: {len(files)}件のファイルが表示されています")
         else:
             files = get_files_in_folder(selected_folder)
-            st.subheader(f"📂 {selected_folder} 内のファイル")
+            st.markdown(f"##### 📂 {selected_folder} 内のファイル")
         
         if files:
             st.write(f"ファイル数: {len(files)}個")
@@ -95,11 +95,11 @@ if folder_list:
                     # ファイル名をクリック可能なボタンに変更
                     if st.button(f"📄 {file['name']}", key=f"file_{i}", help="クリックしてファイル内容を表示"):
                         st.session_state.selected_file = file
-                        # ファイル内容を取得して先頭1000文字を表示
+                        # ファイル内容を取得して先頭2000文字を表示
                         file_content = download_file_content(file['path'])
                         if file_content:
                             text = extract_text_simple(file_content, file['name'])
-                            st.session_state.file_content_preview = text[:1000] if text else "ファイルの内容を読み取れませんでした。"
+                            st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
                         else:
                             st.session_state.file_content_preview = "ファイルの内容を取得できませんでした。"
                 
@@ -123,15 +123,15 @@ else:
 
 
 # 指示ボックス
-prompt = st.chat_input("指示を出して下さい")
+prompt = st.sidebar.chat_input("指示を出して下さい")
 
 
 # ファイル内容表示エリア（プロンプトの下に配置）
 if st.session_state.selected_file and st.session_state.file_content_preview:
     st.markdown("---")
-    st.subheader(f"📋 ファイル内容プレビュー: {st.session_state.selected_file['name']}")
+    st.markdown(f"##### 📋 ファイル内容プレビュー: {st.session_state.selected_file['name']}")
     st.text_area(
-        "ファイル内容（先頭1000文字）",
+        "ファイル内容（先頭2000文字）",
         value=st.session_state.file_content_preview,
         height=200,
         disabled=True

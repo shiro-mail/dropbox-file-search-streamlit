@@ -11,26 +11,40 @@ def search_files(folder_path, user_input):
     """指定フォルダ内でファイルを検索"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
+    print(f"Extracted keywords: {keywords}")  # デバッグ用
+    
     if not keywords:
+        print("No keywords extracted")  # デバッグ用
         return []
+
+    # 除外記法のチェック
+    exclude_keywords = [kw for kw in keywords if kw.get('type') == 'exclude']
+    if exclude_keywords:
+        return search_files_exclude(folder_path, exclude_keywords)
+    
     
     # 関連度トップのキーワードを取得
     top_keyword = max(keywords, key=lambda x: x['relevance'])
     search_term = top_keyword['keyword']
+    print(f"Search term: {search_term}")  # デバッグ用
     
     # ファイル一覧を取得
     files = get_files_in_folder(folder_path)
+    print(f"Total files: {len(files)}")  # デバッグ用
     
     # ファイル名で検索
     search_results = []
     for file in files:
+        print(f"Checking file: {file['name']}")  # デバッグ用
         if search_term.lower() in file['name'].lower():
+            print(f"Match found: {file['name']}")  # デバッグ用
             search_results.append({
                 'file': file,
                 'match_type': 'filename',
                 'search_term': search_term
             })
-    
+
+    print(f"Search results: {len(search_results)}")  # デバッグ用
     return search_results
 
 
@@ -148,3 +162,33 @@ def extract_text_simple(file_content, filename):
     except Exception as e:
         print(f"テキスト抽出エラー ({filename}): {e}")
         return ""
+
+
+def search_files_exclude(folder_path, exclude_keywords):
+    """除外記法でファイルを検索"""
+    files = get_files_in_folder(folder_path)
+    exclude_terms = [kw['keyword'][1:] for kw in exclude_keywords]  # "!"を除去
+    
+    search_results = []
+    for file in files:
+        should_exclude = False
+        for term in exclude_terms:
+            if term.startswith('.'):
+                # 拡張子での除外
+                if file['name'].lower().endswith(term.lower()):
+                    should_exclude = True
+                    break
+            else:
+                # ファイル名での除外
+                if term.lower() in file['name'].lower():
+                    should_exclude = True
+                    break
+        
+        if not should_exclude:
+            search_results.append({
+                'file': file,
+                'match_type': 'exclude_filter',
+                'search_term': f"!{exclude_terms}"
+            })
+    
+    return search_results
