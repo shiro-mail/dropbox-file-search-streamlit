@@ -160,9 +160,9 @@ if st.sidebar.button("🔄 リセット"):
     st.rerun()
 
 # サイドバーにテストボタンを追加
-if st.sidebar.button("🤖 OpenAI接続テスト"):
-    test_result = test_openai_connection()
-    st.sidebar.success(f"テスト結果: {test_result}")
+# if st.sidebar.button("🤖 OpenAI接続テスト"):
+#     test_result = test_openai_connection()
+#     st.sidebar.success(f"テスト結果: {test_result}")
 
 
 
