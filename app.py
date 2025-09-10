@@ -176,7 +176,7 @@ if folder_list:
                                 try:
                                     with fitz.open(stream=file_content, filetype="pdf") as doc:
                                         # 先頭3ページを画像化（必要に応じてページ数を変更）
-                                        for page_num in range(min(10, doc.page_count)):
+                                        for page_num in range(min(3, doc.page_count)):
                                             page = doc.load_page(page_num)
                                             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍解像度
                                             images.append(pix.pil_tobytes(format="PNG"))
@@ -191,9 +191,15 @@ if folder_list:
                                 text = extract_text_simple(file_content, file['name'])
                                 st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
                                 st.session_state.file_content_preview_images = None
-                        else:
-                            st.session_state.file_content_preview = "ファイルの内容を取得できませんでした。"
-                            st.session_state.file_content_preview_images = None
+                    # サブフォルダ表示: 検索ヒットで現在のフォルダ配下のサブフォルダにある場合だけ表示
+                    try:
+                        parent_dir = os.path.dirname(file['path'])
+                        base_root = current_path
+                        rel = os.path.relpath(parent_dir, base_root)
+                        if st.session_state.filtered_files is not None and rel not in (".", ""):  # 検索結果かつサブフォルダ
+                            st.caption(f"📁 {rel}")
+                    except Exception:
+                        pass
                 
                 with col2:
                     # ファイルサイズを表示
