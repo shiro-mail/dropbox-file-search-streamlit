@@ -68,7 +68,7 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-prompt = st.sidebar.chat_input("指示を出して下さい")    
+prompt = st.chat_input("指示を出して下さい")    
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
