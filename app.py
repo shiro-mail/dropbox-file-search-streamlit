@@ -121,7 +121,6 @@ else:
     st.sidebar.write('🔴接続解除')
 
 
-
 # 指示ボックス
 prompt = st.sidebar.chat_input("指示を出して下さい")
 
