@@ -123,12 +123,12 @@ prompt = st.sidebar.chat_input("指示を出して下さい")
 
 # ファイル内容表示エリア（プロンプトの下に配置）
 if st.session_state.selected_file and st.session_state.file_content_preview:
-    st.markdown("---")
+    # st.markdown("---")
     st.markdown(f"##### 📋 ファイル内容プレビュー: {st.session_state.selected_file['name']}")
     st.text_area(
         "ファイル内容（先頭2000文字）",
         value=st.session_state.file_content_preview,
-        height=200,
+        height=500,
         disabled=True
     )
     
