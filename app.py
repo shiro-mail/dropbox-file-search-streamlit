@@ -143,12 +143,15 @@ if prompt:
         response = "該当するファイルが見つかりませんでした"
     
     st.session_state.messages.append({"role": "assistant", "content": response})
-    st.rerun()
 
 # チャット履歴表示
 for message in st.session_state.messages:
     with st.sidebar.chat_message(message["role"]):
         st.sidebar.write(message["content"])
+
+# 検索処理後に画面更新
+if prompt:
+    st.rerun()
 
 # リセットボタン
 if st.sidebar.button("🔄 リセット"):
@@ -163,42 +166,4 @@ if st.sidebar.button("🤖 OpenAI接続テスト"):
 
 
 
-def extract_text_simple(file_content, filename):
-    """簡単なテキスト抽出（PDF, TXT, Excel対応）"""
-    try:
-        if filename.lower().endswith('.pdf'):
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-            
-        elif filename.lower().endswith('.txt'):
-            return file_content.decode('utf-8', errors='ignore')
-            
-        elif filename.lower().endswith(('.xlsx', '.xls')):
-            workbook = openpyxl.load_workbook(io.BytesIO(file_content))
-            text = ""
-            for sheet_name in workbook.sheetnames:
-                sheet = workbook[sheet_name]
-                text += f"シート: {sheet_name}\n"
-                for row in sheet.iter_rows(values_only=True):
-                    row_text = " ".join([str(cell) for cell in row if cell is not None])
-                    if row_text.strip():
-                        text += row_text + "\n"
-            return text
-
-        elif filename.lower().endswith('.docx'):
-            doc = docx.Document(io.BytesIO(file_content))
-            text = ""
-            for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
-            return text
-            
-        else:
-            return ""
-
-    except Exception as e:
-        print(f"テキスト抽出エラー: {e}")
-        return ""
 
