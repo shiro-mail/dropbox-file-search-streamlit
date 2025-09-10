@@ -43,10 +43,6 @@ def search_from_filtered_files(filtered_files, user_input):
 
 st.title("DropBox ファイル検索システム")
 
-# CSSファイルを読み込み
-# with open('style.css') as f:
-#     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-
 # セッション状態の初期化
 if "messages" not in st.session_state:
     st.session_state.messages = []

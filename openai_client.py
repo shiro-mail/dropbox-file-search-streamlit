@@ -1,5 +1,8 @@
 import openai
-from config import OPENAI_API_KEY
+import streamlit as st
+# from config import OPENAI_API_KEY
+
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
 # OpenAI クライアントの初期化
 client = openai.OpenAI(api_key=OPENAI_API_KEY)

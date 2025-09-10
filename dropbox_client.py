@@ -1,5 +1,11 @@
 import dropbox
-from config import DROPBOX_REFRESH_TOKEN, DROPBOX_CLIENT_ID, DROPBOX_CLIENT_SECRET
+import streamlit as st
+# from config import DROPBOX_REFRESH_TOKEN, DROPBOX_CLIENT_ID, DROPBOX_CLIENT_SECRET
+
+DROPBOX_CLIENT_ID = st.secrets["DROPBOX_CLIENT_ID"]
+DROPBOX_CLIENT_SECRET = st.secrets["DROPBOX_CLIENT_SECRET"]
+DROPBOX_REFRESH_TOKEN = st.secrets["DROPBOX_REFRESH_TOKEN"]
+
 
 def get_dropbox_client():
     """Dropboxクライアントを取得"""
