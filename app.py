@@ -13,6 +13,11 @@ from keyword_extractor import extract_keywords
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 def search_from_filtered_files(filtered_files, user_input):
     """絞り込まれたファイルリストから検索"""
     # キーワード抽出
@@ -57,6 +62,8 @@ if "selected_file" not in st.session_state:
     st.session_state.selected_file = None
 if "file_content_preview" not in st.session_state:
     st.session_state.file_content_preview = None
+if "file_content_preview_images" not in st.session_state:
+    st.session_state.file_content_preview_images = None
 if "current_folder" not in st.session_state:
     st.session_state.current_folder = None
 if "selected_folder_prev" not in st.session_state:
@@ -132,13 +139,34 @@ if folder_list:
                     # ファイル名をクリック可能なボタンに変更
                     if st.button(f"📄 {file['name']}", key=f"file_{i}", help="クリックしてファイル内容を表示"):
                         st.session_state.selected_file = file
-                        # ファイル内容を取得して先頭2000文字を表示
                         file_content = download_file_content(file['path'])
                         if file_content:
-                            text = extract_text_simple(file_content, file['name'])
-                            st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
+                            file_ext = os.path.splitext(file['name'])[-1].lower()
+
+                            # PDFは画像化してプレビュー
+                            if file_ext == '.pdf' and fitz is not None:
+                                images = []
+                                try:
+                                    with fitz.open(stream=file_content, filetype="pdf") as doc:
+                                        # 先頭3ページを画像化（必要に応じてページ数を変更）
+                                        for page_num in range(min(3, doc.page_count)):
+                                            page = doc.load_page(page_num)
+                                            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍解像度
+                                            images.append(pix.pil_tobytes(format="PNG"))
+                                    st.session_state.file_content_preview_images = images
+                                    st.session_state.file_content_preview = None  # テキストプレビューはクリア
+                                except Exception:
+                                    st.session_state.file_content_preview = "PDFの画像プレビューを生成できませんでした。"
+                                    st.session_state.file_content_preview_images = None
+
+                            # PDF以外（Word/Excel/TXT）は従来通りテキストプレビュー
+                            else:
+                                text = extract_text_simple(file_content, file['name'])
+                                st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
+                                st.session_state.file_content_preview_images = None
                         else:
                             st.session_state.file_content_preview = "ファイルの内容を取得できませんでした。"
+                            st.session_state.file_content_preview_images = None
                 
                 with col2:
                     # ファイルサイズを表示
@@ -187,21 +215,33 @@ if prompt:
         st.session_state.messages.append({"role": "assistant", "content": response})
 
 
-# ファイル内容表示エリア（プロンプトの下に配置）
-if st.session_state.selected_file and st.session_state.file_content_preview:
-    # st.markdown("---")
-    st.markdown(f"##### 📋 ファイル内容プレビュー: {st.session_state.selected_file['name']}")
-    st.text_area(
-        "ファイル内容（先頭2000文字）",
-        value=st.session_state.file_content_preview,
-        height=500,
-        disabled=True
-    )
-    
-    # プレビューを閉じるボタン
+# プレビューエリア（プロンプトの下に配置）
+if st.session_state.selected_file:
+    display_name = st.session_state.selected_file['name']
+    st.markdown(f"##### 📋 ファイル内容プレビュー: {display_name}")
+
+    file_ext = os.path.splitext(display_name)[-1].lower()
+
+    # PDFは画像（複数ページ）を縦に表示
+    if file_ext == '.pdf' and st.session_state.file_content_preview_images:
+        for i, img_bytes in enumerate(st.session_state.file_content_preview_images):
+            st.image(img_bytes, caption=f"ページ {i+1}", use_container_width=True)
+
+    # それ以外はテキスト
+    elif st.session_state.file_content_preview:
+        st.text_area(
+            "ファイル内容（先頭2000文字）",
+            value=st.session_state.file_content_preview,
+            height=500,
+            disabled=True
+        )
+    else:
+        st.info("プレビュー内容がありません。")
+
     if st.button("❌ プレビューを閉じる"):
         st.session_state.selected_file = None
         st.session_state.file_content_preview = None
+        st.session_state.file_content_preview_images = None
         st.rerun()
 
 
@@ -226,6 +266,7 @@ if st.sidebar.button("🔄 リセット"):
     st.session_state.messages = []
     st.session_state.selected_file = None
     st.session_state.file_content_preview = None
+    st.session_state.file_content_preview_images = None
     st.rerun()
 
 # サイドバーにテストボタンを追加
