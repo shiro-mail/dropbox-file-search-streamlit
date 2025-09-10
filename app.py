@@ -18,6 +18,32 @@ try:
 except ImportError:
     fitz = None
 
+# --- 追加: OCRフォールバックを内包したテキスト抽出を使って概要を生成 ---
+# extract_text_simple 側でOCRフォールバックが実装されているため、
+# ここでは抽出済みテキストをLLMで要約するだけで良い。
+def get_file_summary(file_path: str, file_name: str) -> str:
+    """ファイル内容をOCRを含む抽出で取得し、短い日本語要約を返す。"""
+    try:
+        file_content = download_file_content(file_path)
+        if not file_content:
+            return "ファイルの内容を取得できませんでした。"
+
+        text = extract_text_simple(file_content, file_name) or ""
+        if not text.strip():
+            return "ファイルの内容を読み取れませんでした。画像ベースのPDFの可能性があります。"
+
+        prompt = (
+            "以下の文書を日本語で100文字以内の要約にしてください。\n"
+            f"ファイル名: {file_name}\n\n"
+            f"本文(先頭のみ):\n{text[:2500]}\n\n"
+            "要約:"
+        )
+        summary = process_user_instruction(prompt) or ""
+        return summary.strip() or "要約を生成できませんでした。"
+    except Exception as e:
+        return f"概要の生成中にエラーが発生しました: {e}"
+
+
 def search_from_filtered_files(filtered_files, user_input):
     """絞り込まれたファイルリストから検索"""
     # キーワード抽出

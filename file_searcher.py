@@ -14,6 +14,13 @@ import openpyxl
 import xlrd # .xlsファイル対応のために追加
 from dropbox_client import get_dropbox_client, get_files_in_folder 
 from keyword_extractor import extract_keywords
+# OCR 用ライブラリ（存在しなければ無視）
+try:
+    import pytesseract
+    from PIL import Image
+except Exception:
+    pytesseract = None
+    Image = None
 
 def search_files(folder_path, user_input):
     """指定フォルダ内でファイルを検索"""
@@ -149,6 +156,23 @@ def extract_text_simple(file_content, filename):
                     extracted = pdfminer_extract_text(io.BytesIO(file_content)) or ""
                 except Exception:
                     extracted = extracted or ""
+
+            # 4) OCRフォールバック（画像PDF対策）
+            if not extracted.strip() and pytesseract and fitz and Image:
+                try:
+                    with fitz.open(stream=file_content, filetype="pdf") as doc:
+                        ocr_text = ""
+                        # 最初の数ページのみOCR（処理負荷軽減）
+                        for page_num in range(min(doc.page_count, 2)):
+                            page = doc.load_page(page_num)
+                            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                            # 日本語を優先（英数字混在の場合は 'jpn+eng' も可）
+                            ocr_text += pytesseract.image_to_string(img, lang='jpn') + "\n"
+                        if ocr_text.strip():
+                            extracted = ocr_text
+                except Exception:
+                    pass
 
             text += extracted
             
