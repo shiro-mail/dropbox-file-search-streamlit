@@ -68,7 +68,7 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-prompt = st.chat_input("指示を出して下さい")
+prompt = st.sidebar.chat_input("指示を出して下さい")    
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -83,13 +83,6 @@ if prompt:
     # 統合検索
     results = search_files_comprehensive(selected_folder, prompt)
     
-    # if results:
-    #     response = f"検索結果: {len(results)}件のファイルが見つかりました\n\n"
-    #     for i, result in enumerate(results, 1):
-    #         match_type = "ファイル名" if result['match_type'] == 'filename' else "内容"
-    #         response += f"{i}. {result['file']['name']} ({match_type}でマッチ)\n"
-
-
     if results:
         response = f"検索結果: {len(results)}件のファイルが見つかりました\n\n"
         for i, result in enumerate(results, 1):
@@ -101,8 +94,8 @@ if prompt:
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+    with st.sidebar.chat_message(message["role"]):
+        st.sidebar.write(message["content"])
 
 
 # サイドバーにテストボタンを追加
