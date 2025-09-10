@@ -31,7 +31,7 @@ except ImportError:
     print("Pytesseract is not installed. Skipping OCR tests.")
 
 # テスト対象のPDFファイルパス
-PDF_FILE_NAME = "clasic.pdf"
+PDF_FILE_NAME = "燃料消費量計算書.pdf"
 PDF_FILE_PATH = Path(__file__).parent / PDF_FILE_NAME
 
 def test_pdf_extraction(file_path):
