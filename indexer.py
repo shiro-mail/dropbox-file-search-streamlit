@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 import errno
 from typing import Iterable, List, Tuple, Optional
+from datetime import datetime
 
 import numpy as np
 
@@ -451,6 +452,35 @@ def get_paths_by_ids(ids: List[int]) -> List[str]:
     rows = cur.fetchall()
     con.close()
     return [str(r[0]) for r in rows]
+
+
+def get_files_by_ids(ids: List[int]) -> List[dict]:
+    if not ids:
+        return []
+    con = _connect()
+    cur = con.cursor()
+    qmarks = ",".join(["?"] * len(ids))
+    cur.execute(f"SELECT id, path, modified, size, ext FROM files WHERE id IN ({qmarks})", ids)
+    rows = cur.fetchall()
+    con.close()
+    results: List[dict] = []
+    for fid, path, modified, size, ext in rows:
+        try:
+            mod_dt = datetime.fromisoformat(str(modified)) if modified else None
+        except Exception:
+            mod_dt = None
+        results.append({
+            'id': int(fid),
+            'name': os.path.basename(str(path)),
+            'path': str(path),
+            'modified': mod_dt or str(modified),
+            'size': int(size) if size is not None else 0,
+            'ext': str(ext) if ext is not None else ''
+        })
+    # 入力順に並べ替え
+    order = {i: idx for idx, i in enumerate(ids)}
+    results.sort(key=lambda d: order.get(d.get('id', -1), 1_000_000))
+    return results
 
 
 def count_indexed_files_in(folder: str) -> int:

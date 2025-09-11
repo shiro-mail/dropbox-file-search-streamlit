@@ -13,7 +13,7 @@ from keyword_extractor import extract_keywords
 from urllib.parse import quote
 from indexer import build_index, search_fts, search_vector
 from indexer import search_fts_ng, search_fts_ng_exact, backfill_texts_ng, count_indexed_files_in
-from indexer import get_storage_bytes, reset_index
+from indexer import get_storage_bytes, reset_index, get_files_by_ids
 
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
@@ -26,6 +26,28 @@ except ImportError:
 # --- 追加: OCRフォールバックを内包したテキスト抽出を使って概要を生成 ---
 # extract_text_simple 側でOCRフォールバックが実装されているため、
 # ここでは抽出済みテキストをLLMで要約するだけで良い。
+
+def _list_files_recursive(root_path: str):
+    """指定フォルダ配下（サブフォルダ含む）のファイル一覧を返す（深さ優先）。"""
+    stack = [root_path]
+    out = []
+    seen = set()
+    while stack:
+        cur = stack.pop()
+        try:
+            for f in get_files_in_folder(cur) or []:
+                p = f.get('path')
+                if p and p not in seen:
+                    out.append(f)
+                    seen.add(p)
+            for s in get_subfolders(cur) or []:
+                p = s.get('full_path') or s.get('path')
+                if p:
+                    stack.append(p)
+        except Exception:
+            pass
+    return out
+
 def get_file_summary(file_path: str, file_name: str) -> str:
     """ファイル内容をOCRを含む抽出で取得し、短い日本語要約を返す。"""
     try:
@@ -198,8 +220,9 @@ if folder_list:
                         st.rerun()
             
             # ファイル表示
-            files = get_files_in_folder(current_path)
             st.markdown(f"##### 📄 ファイル")
+            show_recursive = st.checkbox("サブフォルダのファイルも表示", value=True)
+            files = _list_files_recursive(current_path) if show_recursive else get_files_in_folder(current_path)
         
         if files:
             st.write(f"ファイル数: {len(files)}個")
@@ -237,12 +260,12 @@ if folder_list:
                                 text = extract_text_simple(file_content, file['name'])
                                 st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
                                 st.session_state.file_content_preview_images = None
-                    # サブフォルダ表示: 検索ヒットで現在のフォルダ配下のサブフォルダにある場合だけ表示
+                    # サブフォルダ表示: 検索ヒットや再帰表示で現在フォルダ配下のサブフォルダにある場合だけ表示
                     try:
                         parent_dir = os.path.dirname(file['path'])
                         base_root = current_path
                         rel = os.path.relpath(parent_dir, base_root)
-                        if st.session_state.filtered_files is not None and rel not in (".", ""):  # 検索結果かつサブフォルダ
+                        if rel not in (".", ""):
                             st.caption(f"📁 {rel}")
                     except Exception:
                         pass
@@ -253,8 +276,13 @@ if folder_list:
                     st.write(f"{size_mb:.1f}MB")
                 
                 with col3:
-                    # 更新日を表示
-                    st.write(file['modified'].strftime("%Y-%m-%d"))
+                    # 更新日を表示（datetimeでない場合も安全に表示）
+                    mod = file['modified']
+                    try:
+                        txt = mod.strftime("%Y-%m-%d") if hasattr(mod, 'strftime') else str(mod)
+                    except Exception:
+                        txt = str(mod)
+                    st.write(txt)
         else:
             if st.session_state.filtered_files is not None:
                 st.warning("検索条件に一致するファイルがありません")
@@ -330,8 +358,14 @@ if query:
             f"n-gram: {len(ng_hits_f)}件 ({(t2-t1)*1000:.0f}ms) / "
             f"Vector: {len(vec_hits_f)}件 ({(t3-t2)*1000:.0f}ms)"
         )
+        # メイン画面に結果を表示できるよう、絞り込みリストに反映
+        try:
+            st.session_state.filtered_files = get_files_by_ids(merged_ids)
+        except Exception:
+            st.session_state.filtered_files = []
     else:
         st.sidebar.info("インデックスにヒットしませんでした")
+        st.session_state.filtered_files = []
 
 
 # 指示ボックス
