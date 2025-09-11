@@ -9,6 +9,7 @@ from dropbox_client import test_connection, get_dropbox_folders, get_subfolders,
 from openai_client import test_openai_connection, process_user_instruction
 from file_searcher import search_files_comprehensive, download_file_content, extract_text_simple
 from keyword_extractor import extract_keywords
+from urllib.parse import quote
 from indexer import build_index, search_fts, search_vector
 
 
@@ -122,8 +123,28 @@ if folder_list:
     # 選択したフォルダ配下のサブフォルダとファイルをMain画面に表示
     if selected_folder:
         # 現在の表示パス（選択フォルダ直下からナビゲーション）
+        # クエリパラメータ path があれば、そのパスへ移動（リンククリック時に反映）
+        try:
+            _qp = st.query_params
+            _q_path = _qp.get("path")
+            if isinstance(_q_path, list):
+                _q_path = _q_path[0] if _q_path else None
+            if _q_path:
+                st.session_state.current_folder = _q_path
+        except Exception:
+            pass
+
         current_path = st.session_state.current_folder or selected_folder
-        st.markdown(f"###### 📂 現在のフォルダ: {current_path}")
+        # 以前の見た目を保ちつつ、各区切りをインラインリンク化
+        parts = [p for p in (current_path or "/").strip('/').split('/') if p]
+        acc = ""
+        links = []
+        for p in parts:
+            acc = f"{acc}/{p}" if acc else f"/{p}"
+            href = f"?path={quote(acc, safe='/')}"
+            links.append(f'<a href="{href}" style="text-decoration:none;">{p}</a>')
+        display = "/" if not links else " / ".join(links)
+        st.markdown(f"###### 📂 現在のフォルダ: {display}", unsafe_allow_html=True)
 
         # 親フォルダへ戻る（選択フォルダより上には戻らない）
         if current_path and current_path != selected_folder:

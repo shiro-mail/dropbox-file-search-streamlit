@@ -1,6 +1,8 @@
 import os
 import sqlite3
 from pathlib import Path
+from typing import Optional
+import errno
 from typing import Iterable, List, Tuple, Optional
 
 import numpy as np
@@ -17,8 +19,10 @@ except Exception:
 DATA_DIR = Path("data")
 FTS_PATH = DATA_DIR / "index.sqlite"
 VEC_DIR = DATA_DIR / "vector"
+LOCK_DIR = DATA_DIR / "locks"
 VEC_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
 EMB_DIM = 1536  # text-embedding-3-small 既定
 
@@ -129,34 +133,106 @@ def _iter_files_recursive(root: str):
                 stack.append(p)
 
 
+def _normalize_for_ngram(s: str) -> str:
+    """日本語向け: 空白・改行を除去して素朴に正規化。"""
+    try:
+        import re
+        s = s.replace("\u3000", " ")
+        s = s.replace("\n", " ").replace("\r", " ")
+        s = re.sub(r"\s+", "", s)
+        return s
+    except Exception:
+        return s
+
+
+def _to_ngrams(s: str, n: int = 2) -> str:
+    txt = _normalize_for_ngram(s)
+    if len(txt) <= n:
+        return txt
+    grams = [txt[i:i+n] for i in range(len(txt) - n + 1)]
+    return " ".join(grams)
+
+
+def _compose_index_text(filename: str, content: str) -> str:
+    """ファイル名も含めて n-gram 化した文字列をFTSに投入する。"""
+    base = f"{filename}\n{content or ''}"
+    return _to_ngrams(base, n=2)
+
+
+def _lock_path_for(folder: str) -> Path:
+    safe = folder.strip("/").replace("/", "_") or "root"
+    return LOCK_DIR / f"index_{safe}.lock"
+
+
+def _acquire_lock(folder: str) -> Optional[Path]:
+    """Create an exclusive lock file for the folder. Returns lock path or None if exists."""
+    lp = _lock_path_for(folder)
+    try:
+        fd = os.open(str(lp), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return lp
+    except FileExistsError:
+        return None
+
+
+def _release_lock(lock_path: Path) -> None:
+    try:
+        lock_path.unlink(missing_ok=True)  # py>=3.8
+    except Exception:
+        pass
+
+
 def build_index(dropbox_folder: str, recursive: bool = True) -> None:
     """指定フォルダ配下のファイルをダウンロード→抽出→インデックス化（FTS/FAISS）。
     recursive=True でサブフォルダも含めて再帰的に処理します。
     """
-    init_schema()
-    con = _connect()
+    # 二重起動防止用ロック
+    lock = _acquire_lock(dropbox_folder)
+    if lock is None:
+        print(f"[indexer] Skip: index build already running for {dropbox_folder}")
+        return
+    try:
+        init_schema()
+        con = _connect()
 
-    files = list(_iter_files_recursive(dropbox_folder)) if recursive else get_files_in_folder(dropbox_folder)
+        files = list(_iter_files_recursive(dropbox_folder)) if recursive else get_files_in_folder(dropbox_folder)
 
-    for f in files:
-        path = f["path"]
-        modified = f["modified"].isoformat() if hasattr(f["modified"], "isoformat") else str(f["modified"])  # type: ignore
-        size = int(f["size"])  # type: ignore
-        ext = os.path.splitext(f["name"])[-1].lower()
+        cur = con.cursor()
+        for f in files:
+            path = f["path"]
+            modified = f["modified"].isoformat() if hasattr(f["modified"], "isoformat") else str(f["modified"])  # type: ignore
+            size = int(f["size"])  # type: ignore
+            ext = os.path.splitext(f["name"])[-1].lower()
 
-        content_bytes = download_file_content(path)
-        if not content_bytes:
-            continue
-        text = extract_text_simple(content_bytes, f["name"]) or ""
-        file_id = _upsert_file(con, path, modified, size, ext)
-        _upsert_text(con, file_id, text)
-        # ベクターは全文だと重いので先頭を代表ベクトルに
-        head = text[:1500]
-        if head.strip():
-            vec_store.add(file_id, head)
-    con.commit()
-    con.close()
-    vec_store.save()
+            # 既存メタと一致ならスキップ（重複作成回避）
+            cur.execute("SELECT modified, size, ext FROM files WHERE path=?", (path,))
+            row = cur.fetchone()
+            if row and str(row[0]) == modified and int(row[1]) == size and str(row[2]) == ext:
+                # texts 未登録なら補填する（完全スキップはしない）
+                cur.execute("SELECT id FROM files WHERE path=?", (path,))
+                fid_row = cur.fetchone()
+                if fid_row:
+                    file_id_existing = int(fid_row[0])
+                    cur.execute("SELECT 1 FROM texts WHERE file_id=?", (file_id_existing,))
+                    if cur.fetchone():
+                        continue
+
+            content_bytes = download_file_content(path)
+            if not content_bytes:
+                continue
+            raw_text = extract_text_simple(content_bytes, f["name"]) or ""
+            index_text = _compose_index_text(f["name"], raw_text)
+            file_id = _upsert_file(con, path, modified, size, ext)
+            _upsert_text(con, file_id, index_text)
+            # ベクターは全文だと重いので先頭を代表ベクトルに
+            head = raw_text[:1500]
+            if head.strip():
+                vec_store.add(file_id, head)
+        con.commit()
+        con.close()
+        vec_store.save()
+    finally:
+        _release_lock(lock)
 
 
 def search_fts(query: str, limit: int = 20) -> List[Tuple[int, str]]:
