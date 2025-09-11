@@ -4,6 +4,7 @@ import io
 import openpyxl
 import docx
 import os
+import time
 import config
 from dropbox_client import test_connection, get_dropbox_folders, get_subfolders, get_files_in_folder
 from openai_client import test_openai_connection, process_user_instruction
@@ -11,6 +12,7 @@ from file_searcher import search_files_comprehensive, download_file_content, ext
 from keyword_extractor import extract_keywords
 from urllib.parse import quote
 from indexer import build_index, search_fts, search_vector
+from indexer import search_fts_ng, search_fts_ng_exact, backfill_texts_ng, count_indexed_files_in
 
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
@@ -114,11 +116,30 @@ if folder_list:
         index=0
     )
     
+    # インデックス存在チェックのヘルパ
+    def _ensure_index_warning(target_folder: str) -> None:
+        try:
+            n_indexed = count_indexed_files_in(target_folder)
+        except Exception:
+            n_indexed = 0
+        if n_indexed == 0:
+            with st.sidebar:
+                st.warning("このフォルダは未インデックスです。作成しますか？")
+                if st.button("📚 いま作成する", key=f"btn_build_index_{target_folder}"):
+                    with st.spinner("インデックスを作成しています..."):
+                        build_index(target_folder)
+                        try:
+                            backfill_texts_ng()
+                        except Exception:
+                            pass
+                    st.success("インデックス作成が完了しました")
+
     # フォルダ選択の変更検知と現在フォルダの初期化
     if st.session_state.selected_folder_prev != selected_folder:
         st.session_state.selected_folder_prev = selected_folder
         st.session_state.current_folder = selected_folder
         st.session_state.filtered_files = None
+        _ensure_index_warning(st.session_state.current_folder)
     
     # 選択したフォルダ配下のサブフォルダとファイルをMain画面に表示
     if selected_folder:
@@ -131,6 +152,7 @@ if folder_list:
                 _q_path = _q_path[0] if _q_path else None
             if _q_path:
                 st.session_state.current_folder = _q_path
+                _ensure_index_warning(st.session_state.current_folder)
         except Exception:
             pass
 
@@ -154,6 +176,7 @@ if folder_list:
             if st.button("⬆️ 親フォルダへ"):
                 st.session_state.current_folder = parent_path
                 st.session_state.filtered_files = None
+                _ensure_index_warning(st.session_state.current_folder)
                 st.rerun()
 
         # 絞り込まれたファイルリストがある場合はそれを使用、なければ全ファイルを表示
@@ -170,6 +193,7 @@ if folder_list:
                     if st.button(f"📁 {folder['name']}", key=f"subfolder_{folder['full_path']}"):
                         st.session_state.current_folder = folder['full_path']
                         st.session_state.filtered_files = None
+                        _ensure_index_warning(st.session_state.current_folder)
                         st.rerun()
             
             # ファイル表示
@@ -246,21 +270,54 @@ with st.sidebar.expander("インデックス" , expanded=False):
         with st.spinner("インデックスを作成/更新しています..."):
             target = st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)
             build_index(target)
+            # n-gram（texts_ng）が空のケースを補完
+            try:
+                backfilled = backfill_texts_ng()
+                if backfilled:
+                    st.sidebar.info(f"n-gramを{backfilled}件補完しました")
+            except Exception:
+                pass
         st.success("インデックス更新が完了しました")
 
-    query = st.text_input("高速検索（インデックス）", value="")
-    if query:
-        # FTS と ベクターの両方を叩いてマージ（簡易）
-        fts_hits = search_fts(query, limit=20)
-        vec_hits = search_vector(query, k=10)
-        merged_ids = []
-        for hid in [h[0] for h in fts_hits + vec_hits]:
-            if hid not in merged_ids:
-                merged_ids.append(hid)
-        if merged_ids:
-            st.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
-        else:
-            st.info("インデックスにヒットしませんでした")
+# サイドバー: 高速検索（インデックス）を常時表示
+st.sidebar.markdown("### 高速検索（インデックス）")
+query = st.sidebar.text_input("キーワード", value="")
+exact_only = st.sidebar.checkbox("厳密一致（本文を再確認）", value=False, help="n-gram候補から実際に文字列を含むものだけに限定します")
+use_vector = st.sidebar.checkbox("ベクター検索（遅い）", value=False, help="埋め込み取得に外部APIを使うため遅くなる場合があります")
+if query:
+    # FTS, n-gram FTS, ベクター の3系統を叩いてマージ
+    t0 = time.perf_counter()
+    current_prefix = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH))
+    fts_hits = (search_fts(query, limit=50, folder_prefix=current_prefix)
+                if not exact_only else search_fts_ng_exact(query, limit=50, folder_prefix=current_prefix))
+    t1 = time.perf_counter()
+    ng_hits = [] if exact_only else search_fts_ng(query, limit=50, folder_prefix=current_prefix)
+    t2 = time.perf_counter()
+    vec_hits = search_vector(query, k=20, folder_prefix=current_prefix) if use_vector else []
+    t3 = time.perf_counter()
+    # 現在のフォルダ配下に限定して集計
+    target_folder = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)).rstrip('/')
+    def _in_folder(hit):
+        # hit: (id, path)
+        p = str(hit[1])
+        return p.startswith(target_folder + "/") if target_folder else True
+    fts_hits_f = [h for h in fts_hits if _in_folder(h)]
+    ng_hits_f = [h for h in ng_hits if _in_folder(h)]
+    vec_hits_f = [h for h in vec_hits if _in_folder(h)]
+
+    merged_ids = []
+    for hid in [h[0] for h in fts_hits_f + ng_hits_f + vec_hits_f]:
+        if hid not in merged_ids:
+            merged_ids.append(hid)
+    if merged_ids:
+        st.sidebar.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
+        st.sidebar.caption(
+            f"FTS: {len(fts_hits_f)}件 ({(t1-t0)*1000:.0f}ms) / "
+            f"n-gram: {len(ng_hits_f)}件 ({(t2-t1)*1000:.0f}ms) / "
+            f"Vector: {len(vec_hits_f)}件 ({(t3-t2)*1000:.0f}ms)"
+        )
+    else:
+        st.sidebar.info("インデックスにヒットしませんでした")
 
 
 # 指示ボックス

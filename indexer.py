@@ -52,6 +52,10 @@ def init_schema() -> None:
     cur.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS texts USING fts5(content, file_id UNINDEXED, tokenize='unicode61')"
     )
+    # 日本語向け: 2-gram を事前生成して登録するテーブル
+    cur.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS texts_ng USING fts5(content, file_id UNINDEXED, tokenize='unicode61')"
+    )
     con.commit()
     con.close()
 
@@ -71,6 +75,22 @@ def _upsert_text(con: sqlite3.Connection, file_id: int, content: str) -> None:
     cur = con.cursor()
     cur.execute("DELETE FROM texts WHERE file_id=?", (file_id,))
     cur.execute("INSERT INTO texts(content, file_id) VALUES(?,?)", (content, file_id))
+
+
+def _upsert_text_ng(con: sqlite3.Connection, file_id: int, content: str) -> None:
+    cur = con.cursor()
+    cur.execute("DELETE FROM texts_ng WHERE file_id=?", (file_id,))
+    cur.execute("INSERT INTO texts_ng(content, file_id) VALUES(?,?)", (content, file_id))
+
+
+# 2-gram 生成（重複あり、スペース区切り）
+
+def to_bigrams(s: str) -> str:
+    s = (s or "").replace("\n", "").replace("\r", "")
+    if len(s) < 2:
+        return s
+    grams = [s[i:i+2] for i in range(len(s)-1)]
+    return " ".join(grams)
 
 
 # ベクターインデックス（FAISS）
@@ -113,6 +133,7 @@ class VectorStore:
 
 vec_store = VectorStore(EMB_DIM, VEC_DIR)
 
+DEBUG_INDEX = os.getenv("INDEX_DEBUG", "0") == "1"
 
 def _iter_files_recursive(root: str):
     """指定ルート配下のファイルを（サブフォルダも含めて）逐次取得"""
@@ -159,6 +180,46 @@ def _compose_index_text(filename: str, content: str) -> str:
     return _to_ngrams(base, n=2)
 
 
+def backfill_texts_ng(batch_size: int = 1000) -> int:
+    """texts_ng が空、または不足している場合に、files/texts から後追いで補完する。
+    既存DBに texts_ng が未作成だった履歴があるとカウント0のままになるための救済。
+    戻り値は補完した件数。
+    """
+    init_schema()
+    con = _connect()
+    cur = con.cursor()
+    total = 0
+    while True:
+        cur.execute(
+            """
+            SELECT f.id, f.path, t.content
+            FROM files f
+            JOIN texts t ON t.file_id = f.id
+            LEFT JOIN texts_ng n ON n.file_id = f.id
+            WHERE n.file_id IS NULL
+            LIMIT ?
+            """,
+            (batch_size,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            break
+        for fid, path, content in rows:
+            try:
+                filename = os.path.basename(str(path))
+                index_text = _compose_index_text(filename, content or "")
+                _upsert_text_ng(con, int(fid), index_text)
+                total += 1
+                if DEBUG_INDEX:
+                    print(f"[indexer] ngram backfill: {path}")
+            except Exception:
+                # 1件失敗しても続行
+                pass
+        con.commit()
+    con.close()
+    return total
+
+
 def _lock_path_for(folder: str) -> Path:
     safe = folder.strip("/").replace("/", "_") or "root"
     return LOCK_DIR / f"index_{safe}.lock"
@@ -194,40 +255,47 @@ def build_index(dropbox_folder: str, recursive: bool = True) -> None:
     try:
         init_schema()
         con = _connect()
+        cur = con.cursor()
 
         files = list(_iter_files_recursive(dropbox_folder)) if recursive else get_files_in_folder(dropbox_folder)
 
-        cur = con.cursor()
         for f in files:
             path = f["path"]
             modified = f["modified"].isoformat() if hasattr(f["modified"], "isoformat") else str(f["modified"])  # type: ignore
             size = int(f["size"])  # type: ignore
             ext = os.path.splitext(f["name"])[-1].lower()
 
-            # 既存メタと一致ならスキップ（重複作成回避）
-            cur.execute("SELECT modified, size, ext FROM files WHERE path=?", (path,))
+            # 既存メタと一致時は、空テキストやn-gram未登録なら再作成。それ以外はスキップ
+            cur.execute("SELECT id, modified, size, ext FROM files WHERE path=?", (path,))
             row = cur.fetchone()
-            if row and str(row[0]) == modified and int(row[1]) == size and str(row[2]) == ext:
-                # texts 未登録なら補填する（完全スキップはしない）
-                cur.execute("SELECT id FROM files WHERE path=?", (path,))
-                fid_row = cur.fetchone()
-                if fid_row:
-                    file_id_existing = int(fid_row[0])
-                    cur.execute("SELECT 1 FROM texts WHERE file_id=?", (file_id_existing,))
-                    if cur.fetchone():
-                        continue
+            if row and str(row[1]) == modified and int(row[2]) == size and str(row[3]) == ext:
+                file_id_existing = int(row[0])
+                cur.execute("SELECT COALESCE(length(content),0) FROM texts WHERE file_id=?", (file_id_existing,))
+                len_row = cur.fetchone()
+                has_nonempty_text = bool(len_row and int(len_row[0]) > 0)
+                cur.execute("SELECT 1 FROM texts_ng WHERE file_id=?", (file_id_existing,))
+                has_ng = bool(cur.fetchone())
+                if has_nonempty_text and has_ng:
+                    if DEBUG_INDEX:
+                        print(f"[indexer] skip (up-to-date): {path}")
+                    continue
 
             content_bytes = download_file_content(path)
             if not content_bytes:
                 continue
             raw_text = extract_text_simple(content_bytes, f["name"]) or ""
-            index_text = _compose_index_text(f["name"], raw_text)
             file_id = _upsert_file(con, path, modified, size, ext)
-            _upsert_text(con, file_id, index_text)
+            # 通常FTS: 生テキスト
+            _upsert_text(con, file_id, raw_text)
+            # n-gram FTS: ファイル名+本文を2-gram化
+            index_text = _compose_index_text(f["name"], raw_text)
+            _upsert_text_ng(con, file_id, index_text)
             # ベクターは全文だと重いので先頭を代表ベクトルに
             head = raw_text[:1500]
             if head.strip():
                 vec_store.add(file_id, head)
+            if DEBUG_INDEX:
+                print(f"[indexer] indexed: {path}")
         con.commit()
         con.close()
         vec_store.save()
@@ -235,26 +303,129 @@ def build_index(dropbox_folder: str, recursive: bool = True) -> None:
         _release_lock(lock)
 
 
-def search_fts(query: str, limit: int = 20) -> List[Tuple[int, str]]:
+def search_fts(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+    init_schema()
     con = _connect()
     cur = con.cursor()
-    cur.execute(
-        "SELECT files.id, files.path FROM texts JOIN files ON texts.file_id=files.id WHERE texts MATCH ? LIMIT ?",
-        (query, limit),
-    )
+    if folder_prefix:
+        like = folder_prefix.rstrip("/") + "/%"
+        cur.execute(
+            "SELECT files.id, files.path FROM texts JOIN files ON texts.file_id=files.id WHERE texts MATCH ? AND files.path LIKE ? LIMIT ?",
+            (query, like, limit),
+        )
+    else:
+        cur.execute(
+            "SELECT files.id, files.path FROM texts JOIN files ON texts.file_id=files.id WHERE texts MATCH ? LIMIT ?",
+            (query, limit),
+        )
     rows = cur.fetchall()
     con.close()
     return [(int(r[0]), str(r[1])) for r in rows]
 
 
-def search_vector(query: str, k: int = 10) -> List[Tuple[int, str]]:
+def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+    init_schema()
+    # クエリもインデックス時と同じ正規化→2-gram化
+    grams_str = _to_ngrams(query, n=2)
+    if not grams_str or len(query) < 2:
+        return search_fts(query, limit, folder_prefix)
+    tokens = grams_str.split()
+    # OR で任意のgram一致に緩和（取りこぼし削減）
+    q = " OR ".join(tokens)
+    con = _connect()
+    cur = con.cursor()
+    if folder_prefix:
+        like = folder_prefix.rstrip("/") + "/%"
+        cur.execute(
+            "SELECT files.id, files.path FROM texts_ng JOIN files ON texts_ng.file_id=files.id WHERE texts_ng MATCH ? AND files.path LIKE ? LIMIT ?",
+            (q, like, limit),
+        )
+    else:
+        cur.execute(
+            "SELECT files.id, files.path FROM texts_ng JOIN files ON texts_ng.file_id=files.id WHERE texts_ng MATCH ? LIMIT ?",
+            (q, limit),
+        )
+    rows = cur.fetchall()
+    con.close()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
+def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+    """n-gram候補をFTSで取得しつつ、本文にクエリ文字列が実際に含まれるものに限定。
+    SQLiteの INSTR を使った厳密サブストリング判定（Unicode対応）。
+    """
+    init_schema()
+    con = _connect()
+    cur = con.cursor()
+    # クエリも正規化→2-gram化（候補拡張）。
+    grams_str = _to_ngrams(query, n=2)
+    if grams_str and len(query) >= 2:
+        tokens = grams_str.split()
+        q = " OR ".join(tokens)
+        if folder_prefix:
+            like = folder_prefix.rstrip("/") + "/%"
+            cur.execute(
+                (
+                    "SELECT files.id, files.path "
+                    "FROM texts_ng "
+                    "JOIN files ON texts_ng.file_id=files.id "
+                    "JOIN texts ON texts.file_id=files.id "
+                    "WHERE texts_ng MATCH ? AND instr(texts.content, ?) > 0 AND files.path LIKE ? "
+                    "LIMIT ?"
+                ),
+                (q, query, like, limit),
+            )
+        else:
+            cur.execute(
+                (
+                    "SELECT files.id, files.path "
+                    "FROM texts_ng "
+                    "JOIN files ON texts_ng.file_id=files.id "
+                    "JOIN texts ON texts.file_id=files.id "
+                    "WHERE texts_ng MATCH ? AND instr(texts.content, ?) > 0 "
+                    "LIMIT ?"
+                ),
+                (q, query, limit),
+            )
+    else:
+        # 短いクエリは n-gram を使わず、本文の厳密一致のみ
+        if folder_prefix:
+            like = folder_prefix.rstrip("/") + "/%"
+            cur.execute(
+                (
+                    "SELECT files.id, files.path "
+                    "FROM texts JOIN files ON texts.file_id=files.id "
+                    "WHERE instr(texts.content, ?) > 0 AND files.path LIKE ? "
+                    "LIMIT ?"
+                ),
+                (query, like, limit),
+            )
+        else:
+            cur.execute(
+                (
+                    "SELECT files.id, files.path "
+                    "FROM texts JOIN files ON texts.file_id=files.id "
+                    "WHERE instr(texts.content, ?) > 0 "
+                    "LIMIT ?"
+                ),
+                (query, limit),
+            )
+    rows = cur.fetchall()
+    con.close()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+def search_vector(query: str, k: int = 10, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
     ids = vec_store.search(query, k)
     if not ids:
         return []
     con = _connect()
     cur = con.cursor()
     qmarks = ",".join(["?"] * len(ids))
-    cur.execute(f"SELECT id, path FROM files WHERE id IN ({qmarks})", ids)
+    if folder_prefix:
+        like = folder_prefix.rstrip("/") + "/%"
+        cur.execute(f"SELECT id, path FROM files WHERE id IN ({qmarks}) AND path LIKE ?", (*ids, like))
+    else:
+        cur.execute(f"SELECT id, path FROM files WHERE id IN ({qmarks})", ids)
     rows = cur.fetchall()
     con.close()
     return [(int(r[0]), str(r[1])) for r in rows]
@@ -270,3 +441,21 @@ def get_paths_by_ids(ids: List[int]) -> List[str]:
     rows = cur.fetchall()
     con.close()
     return [str(r[0]) for r in rows]
+
+
+def count_indexed_files_in(folder: str) -> int:
+    """指定フォルダ配下でインデックス済みのファイル件数を返す。未作成判定に利用。"""
+    init_schema()
+    con = _connect()
+    cur = con.cursor()
+    folder = (folder or "").rstrip("/")
+    if not folder:
+        cur.execute("SELECT COUNT(*) FROM files")
+        n = int(cur.fetchone()[0])
+    else:
+        like = folder + "/%"
+        cur.execute("SELECT COUNT(*) FROM files WHERE path LIKE ?", (like,))
+        row = cur.fetchone()
+        n = int(row[0]) if row else 0
+    con.close()
+    return n

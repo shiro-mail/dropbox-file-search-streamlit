@@ -2,3 +2,5 @@
 .env.*
 *.secret
 .streamlit/secrets.toml
+# DB index (do not commit)
+/data/*.sqlite
