@@ -4,3 +4,6 @@
 .streamlit/secrets.toml
 # DB index (do not commit)
 /data/*.sqlite
+/data/*.sqlite-*
+/data/vector/**
+/data/locks/**

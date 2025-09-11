@@ -48,6 +48,10 @@ def _list_files_recursive(root_path: str):
             pass
     return out
 
+@st.cache_data(show_spinner=False, ttl=60)
+def _list_files_recursive_cached(root_path: str):
+    return _list_files_recursive(root_path)
+
 def get_file_summary(file_path: str, file_name: str) -> str:
     """ファイル内容をOCRを含む抽出で取得し、短い日本語要約を返す。"""
     try:
@@ -123,6 +127,8 @@ if "selected_folder_prev" not in st.session_state:
     st.session_state.selected_folder_prev = None
 if "file_content_preview_limit" not in st.session_state:
     st.session_state.file_content_preview_limit = 2000
+if "index_warned_for" not in st.session_state:
+    st.session_state.index_warned_for = None
 
 # DropBox APIでフォルダ取得
 base_path = ROOT_PATH  # 例: "/三友工業株式会社 Dropbox"
@@ -143,6 +149,9 @@ if folder_list:
     
     # インデックス存在チェックのヘルパ
     def _ensure_index_warning(target_folder: str) -> None:
+        # 同一フォルダで重複表示しない
+        if st.session_state.index_warned_for == target_folder:
+            return
         try:
             n_indexed = count_indexed_files_in(target_folder)
         except Exception:
@@ -158,13 +167,14 @@ if folder_list:
                         except Exception:
                             pass
                     st.success("インデックス作成が完了しました")
+        # 表示済みとして記録
+        st.session_state.index_warned_for = target_folder
 
     # フォルダ選択の変更検知と現在フォルダの初期化
     if st.session_state.selected_folder_prev != selected_folder:
         st.session_state.selected_folder_prev = selected_folder
         st.session_state.current_folder = selected_folder
         st.session_state.filtered_files = None
-        _ensure_index_warning(st.session_state.current_folder)
     
     # 選択したフォルダ配下のサブフォルダとファイルをMain画面に表示
     if selected_folder:
@@ -177,11 +187,12 @@ if folder_list:
                 _q_path = _q_path[0] if _q_path else None
             if _q_path:
                 st.session_state.current_folder = _q_path
-                _ensure_index_warning(st.session_state.current_folder)
         except Exception:
             pass
 
         current_path = st.session_state.current_folder or selected_folder
+        # 最終的な表示パスが確定してから一度だけ未インデックス警告を評価
+        _ensure_index_warning(current_path)
         # 以前の見た目を保ちつつ、各区切りをインラインリンク化
         parts = [p for p in (current_path or "/").strip('/').split('/') if p]
         acc = ""
@@ -201,8 +212,14 @@ if folder_list:
             if st.button("⬆️ 親フォルダへ"):
                 st.session_state.current_folder = parent_path
                 st.session_state.filtered_files = None
-                _ensure_index_warning(st.session_state.current_folder)
                 st.rerun()
+
+        # 常に表示: サブフォルダのファイルも表示（状態保持）
+        st.checkbox(
+            "サブフォルダのファイルも表示",
+            value=st.session_state.get("show_recursive", False),
+            key="show_recursive",
+        )
 
         # 絞り込まれたファイルリストがある場合はそれを使用、なければ全ファイルを表示
         if st.session_state.filtered_files is not None:
@@ -223,8 +240,7 @@ if folder_list:
             
             # ファイル表示
             st.markdown(f"##### 📄 ファイル")
-            show_recursive = st.checkbox("サブフォルダのファイルも表示", value=True)
-            files = _list_files_recursive(current_path) if show_recursive else get_files_in_folder(current_path)
+            files = _list_files_recursive_cached(current_path) if st.session_state.get("show_recursive") else get_files_in_folder(current_path)
         
         if files:
             st.write(f"ファイル数: {len(files)}個")
@@ -326,51 +342,70 @@ with st.sidebar.expander("インデックス" , expanded=False):
         st.success(f"削除完了。解放: {_fmt(freed)}")
 
 
-# サイドバー: 高速検索（インデックス）を常時表示
+# サイドバー: 高速検索（インデックス） フォーム送信時のみ実行
 st.sidebar.markdown("### 高速検索（インデックス）")
-query = st.sidebar.text_input("キーワード", value="")
-exact_only = st.sidebar.checkbox("厳密一致（本文を再確認）", value=False, help="n-gram候補から実際に文字列を含むものだけに限定します")
-use_vector = st.sidebar.checkbox("ベクター検索（遅い）", value=False, help="埋め込み取得に外部APIを使うため遅くなる場合があります")
-if query:
-    # FTS, n-gram FTS, ベクター の3系統を叩いてマージ
-    t0 = time.perf_counter()
-    current_prefix = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH))
-    fts_hits = (search_fts(query, limit=50, folder_prefix=current_prefix)
-                if not exact_only else search_fts_ng_exact(query, limit=50, folder_prefix=current_prefix))
-    t1 = time.perf_counter()
-    ng_hits = [] if exact_only else search_fts_ng(query, limit=50, folder_prefix=current_prefix)
-    t2 = time.perf_counter()
-    vec_hits = search_vector(query, k=20, folder_prefix=current_prefix) if use_vector else []
-    t3 = time.perf_counter()
-    # 現在のフォルダ配下に限定して集計
-    target_folder = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)).rstrip('/')
-    def _in_folder(hit):
-        # hit: (id, path)
-        p = str(hit[1])
-        return p.startswith(target_folder + "/") if target_folder else True
-    fts_hits_f = [h for h in fts_hits if _in_folder(h)]
-    ng_hits_f = [h for h in ng_hits if _in_folder(h)]
-    vec_hits_f = [h for h in vec_hits if _in_folder(h)]
+with st.sidebar.form("index_search_form", clear_on_submit=False):
+    query = st.text_input("キーワード", value=st.session_state.get("index_query", ""))
+    exact_only = st.checkbox(
+        "厳密一致（本文を再確認）",
+        value=st.session_state.get("index_exact_only", False),
+        help="n-gram候補から実際に文字列を含むものだけに限定します",
+    )
+    use_vector = st.checkbox(
+        "ベクター検索（遅い）",
+        value=st.session_state.get("index_use_vector", False),
+        help="埋め込み取得に外部APIを使うため遅くなる場合があります",
+    )
+    submitted = st.form_submit_button("🔍 検索")
 
-    merged_ids = []
-    for hid in [h[0] for h in fts_hits_f + ng_hits_f + vec_hits_f]:
-        if hid not in merged_ids:
-            merged_ids.append(hid)
-    if merged_ids:
-        st.sidebar.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
-        st.sidebar.caption(
-            f"FTS: {len(fts_hits_f)}件 ({(t1-t0)*1000:.0f}ms) / "
-            f"n-gram: {len(ng_hits_f)}件 ({(t2-t1)*1000:.0f}ms) / "
-            f"Vector: {len(vec_hits_f)}件 ({(t3-t2)*1000:.0f}ms)"
-        )
-        # メイン画面に結果を表示できるよう、絞り込みリストに反映
-        try:
-            st.session_state.filtered_files = get_files_by_ids(merged_ids)
-        except Exception:
-            st.session_state.filtered_files = []
+if submitted:
+    if not query:
+        st.sidebar.warning("キーワードを入力してください")
     else:
-        st.sidebar.info("インデックスにヒットしませんでした")
-        st.session_state.filtered_files = []
+        # 入力値を保持
+        st.session_state.index_query = query
+        st.session_state.index_exact_only = exact_only
+        st.session_state.index_use_vector = use_vector
+
+        # FTS, n-gram FTS, ベクター の3系統を叩いてマージ
+        t0 = time.perf_counter()
+        current_prefix = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH))
+        fts_hits = (search_fts(query, limit=50, folder_prefix=current_prefix)
+                    if not exact_only else search_fts_ng_exact(query, limit=50, folder_prefix=current_prefix))
+        t1 = time.perf_counter()
+        ng_hits = [] if exact_only else search_fts_ng(query, limit=50, folder_prefix=current_prefix)
+        t2 = time.perf_counter()
+        vec_hits = search_vector(query, k=20, folder_prefix=current_prefix) if use_vector else []
+        t3 = time.perf_counter()
+        # 現在のフォルダ配下に限定して集計
+        target_folder = (st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)).rstrip('/')
+        def _in_folder(hit):
+            # hit: (id, path)
+            p = str(hit[1])
+            return p.startswith(target_folder + "/") if target_folder else True
+        fts_hits_f = [h for h in fts_hits if _in_folder(h)]
+        ng_hits_f = [h for h in ng_hits if _in_folder(h)]
+        vec_hits_f = [h for h in vec_hits if _in_folder(h)]
+
+        merged_ids = []
+        for hid in [h[0] for h in fts_hits_f + ng_hits_f + vec_hits_f]:
+            if hid not in merged_ids:
+                merged_ids.append(hid)
+        if merged_ids:
+            st.sidebar.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
+            st.sidebar.caption(
+                f"FTS: {len(fts_hits_f)}件 ({(t1-t0)*1000:.0f}ms) / "
+                f"n-gram: {len(ng_hits_f)}件 ({(t2-t1)*1000:.0f}ms) / "
+                f"Vector: {len(vec_hits_f)}件 ({(t3-t2)*1000:.0f}ms)"
+            )
+            # メイン画面に結果を表示できるよう、絞り込みリストに反映
+            try:
+                st.session_state.filtered_files = get_files_by_ids(merged_ids)
+            except Exception:
+                st.session_state.filtered_files = []
+        else:
+            st.sidebar.info("インデックスにヒットしませんでした")
+            st.session_state.filtered_files = []
 
 
 # 指示ボックス

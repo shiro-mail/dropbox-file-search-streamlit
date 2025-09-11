@@ -5,6 +5,7 @@ from typing import Optional
 import errno
 from typing import Iterable, List, Tuple, Optional
 from datetime import datetime
+import time
 
 import numpy as np
 
@@ -41,6 +42,7 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(FTS_PATH))
     con.execute("PRAGMA journal_mode=WAL;")
     con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=2000;")
     return con
 
 
@@ -314,10 +316,16 @@ def build_index(dropbox_folder: str, recursive: bool = True) -> None:
         _release_lock(lock)
 
 
-def search_fts(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+def search_fts(query: str, limit: int = 20, folder_prefix: Optional[str] = None, timeout_ms: int = 1500) -> List[Tuple[int, str]]:
     init_schema()
     con = _connect()
     cur = con.cursor()
+    start = time.perf_counter()
+    def _progress() -> int:
+        if (time.perf_counter() - start) * 1000.0 > timeout_ms:
+            return 1
+        return 0
+    con.set_progress_handler(_progress, 10000)
     if folder_prefix:
         like = folder_prefix.rstrip("/") + "/%"
         cur.execute(
@@ -330,11 +338,12 @@ def search_fts(query: str, limit: int = 20, folder_prefix: Optional[str] = None)
             (query, limit),
         )
     rows = cur.fetchall()
+    con.set_progress_handler(None, 0)
     con.close()
     return [(int(r[0]), str(r[1])) for r in rows]
 
 
-def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = None, timeout_ms: int = 1500) -> List[Tuple[int, str]]:
     init_schema()
     # クエリもインデックス時と同じ正規化→2-gram化
     grams_str = _to_ngrams(query, n=2)
@@ -345,6 +354,12 @@ def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = No
     q = " OR ".join(tokens)
     con = _connect()
     cur = con.cursor()
+    start = time.perf_counter()
+    def _progress() -> int:
+        if (time.perf_counter() - start) * 1000.0 > timeout_ms:
+            return 1
+        return 0
+    con.set_progress_handler(_progress, 10000)
     if folder_prefix:
         like = folder_prefix.rstrip("/") + "/%"
         cur.execute(
@@ -357,17 +372,24 @@ def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = No
             (q, limit),
         )
     rows = cur.fetchall()
+    con.set_progress_handler(None, 0)
     con.close()
     return [(int(r[0]), str(r[1])) for r in rows]
 
 
-def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str] = None) -> List[Tuple[int, str]]:
+def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str] = None, timeout_ms: int = 2000) -> List[Tuple[int, str]]:
     """n-gram候補をFTSで取得しつつ、本文にクエリ文字列が実際に含まれるものに限定。
     SQLiteの INSTR を使った厳密サブストリング判定（Unicode対応）。
     """
     init_schema()
     con = _connect()
     cur = con.cursor()
+    start = time.perf_counter()
+    def _progress() -> int:
+        if (time.perf_counter() - start) * 1000.0 > timeout_ms:
+            return 1
+        return 0
+    con.set_progress_handler(_progress, 10000)
     # クエリも正規化→2-gram化（候補拡張）。
     grams_str = _to_ngrams(query, n=2)
     if grams_str and len(query) >= 2:
@@ -422,6 +444,7 @@ def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str
                 (query, limit),
             )
     rows = cur.fetchall()
+    con.set_progress_handler(None, 0)
     con.close()
     return [(int(r[0]), str(r[1])) for r in rows]
 
