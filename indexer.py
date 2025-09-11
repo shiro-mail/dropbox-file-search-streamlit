@@ -148,14 +148,31 @@ vec_store = VectorStore(EMB_DIM, VEC_DIR)
 
 DEBUG_INDEX = os.getenv("INDEX_DEBUG", "0") == "1"
 
-def _iter_files_recursive(root: str):
-    """指定ルート配下のファイルを（サブフォルダも含めて）逐次取得"""
+def _iter_files_recursive(root: str, exclude_prefixes: Optional[List[str]] = None):
+    """指定ルート配下のファイルを（サブフォルダも含めて）逐次取得。
+    exclude_prefixes が与えられた場合、その配下（サブも含む）は除外。
+    """
+    def _is_excluded(path: str) -> bool:
+        if not exclude_prefixes:
+            return False
+        p = (path or "").rstrip("/")
+        for ex in exclude_prefixes:
+            exn = (ex or "").rstrip("/")
+            if not exn:
+                continue
+            if p == exn or p.startswith(exn + "/"):
+                return True
+        return False
+
     stack = [root]
     while stack:
         cur = stack.pop()
         # 直下のファイル
-        for f in get_files_in_folder(cur):
-            yield f
+        if not _is_excluded(cur):
+            for f in get_files_in_folder(cur):
+                fp = f.get("path") or ""
+                if not _is_excluded(fp):
+                    yield f
         # サブフォルダを探索
         try:
             subs = get_subfolders(cur) or []
@@ -163,7 +180,7 @@ def _iter_files_recursive(root: str):
             subs = []
         for s in subs:
             p = s.get("full_path") or s.get("path")
-            if p:
+            if p and not _is_excluded(p):
                 stack.append(p)
 
 
@@ -256,7 +273,12 @@ def _release_lock(lock_path: Path) -> None:
         pass
 
 
-def build_index(dropbox_folder: str, recursive: bool = True) -> None:
+def build_index(
+    dropbox_folder: str,
+    recursive: bool = True,
+    exclude_prefixes: Optional[List[str]] = None,
+    include_prefixes: Optional[List[str]] = None,
+) -> None:
     """指定フォルダ配下のファイルをダウンロード→抽出→インデックス化（FTS/FAISS）。
     recursive=True でサブフォルダも含めて再帰的に処理します。
     """
@@ -270,7 +292,34 @@ def build_index(dropbox_folder: str, recursive: bool = True) -> None:
         con = _connect()
         cur = con.cursor()
 
-        files = list(_iter_files_recursive(dropbox_folder)) if recursive else get_files_in_folder(dropbox_folder)
+        if recursive:
+            if include_prefixes:
+                roots: List[str] = []
+                base = (dropbox_folder or "").rstrip("/")
+                for inc in include_prefixes:
+                    incn = (inc or "").rstrip("/")
+                    if not incn:
+                        continue
+                    if incn == base or incn.startswith(base + "/"):
+                        roots.append(incn)
+                files = []
+                for r in roots:
+                    files.extend(list(_iter_files_recursive(r, exclude_prefixes)))
+            else:
+                files = list(_iter_files_recursive(dropbox_folder, exclude_prefixes))
+        else:
+            base_files = get_files_in_folder(dropbox_folder)
+            files = []
+            for f in base_files:
+                p = (f.get("path") or "")
+                ok = True
+                if include_prefixes:
+                    ok = any(p == inc.rstrip("/") or p.startswith(inc.rstrip("/") + "/") for inc in include_prefixes)
+                if ok and exclude_prefixes:
+                    if any(p == ex.rstrip("/") or p.startswith(ex.rstrip("/") + "/") for ex in exclude_prefixes):
+                        ok = False
+                if ok:
+                    files.append(f)
 
         for f in files:
             path = f["path"]

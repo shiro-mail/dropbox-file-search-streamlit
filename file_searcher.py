@@ -24,13 +24,43 @@ except Exception:
 
 # 再帰的にフォルダ配下のファイルを列挙
 
-def _iter_files_recursive(root: str):
-    stack = [root]
+from typing import List, Optional
+
+def _iter_files_recursive(root: str, exclude_prefixes: Optional[List[str]] = None, include_prefixes: Optional[List[str]] = None):
+    def _is_excluded(path: str) -> bool:
+        if not exclude_prefixes:
+            return False
+        p = (path or "").rstrip("/")
+        for ex in exclude_prefixes:
+            exn = (ex or "").rstrip("/")
+            if not exn:
+                continue
+            if p == exn or p.startswith(exn + "/"):
+                return True
+        return False
+
+    # include が指定されている場合は、その配下だけを起点にする
+    if include_prefixes:
+        stack = []
+        base = (root or "").rstrip("/")
+        for inc in include_prefixes:
+            incn = (inc or "").rstrip("/")
+            if not incn:
+                continue
+            if incn == base or incn.startswith(base + "/"):
+                stack.append(incn)
+        if not stack:
+            stack = [root]
+    else:
+        stack = [root]
     while stack:
         cur = stack.pop()
         # ファイル
-        for f in get_files_in_folder(cur):
-            yield f
+        if not _is_excluded(cur):
+            for f in get_files_in_folder(cur):
+                fp = f.get('path') or ''
+                if not _is_excluded(fp):
+                    yield f
         # サブフォルダ
         try:
             subs = get_subfolders(cur) or []
@@ -38,11 +68,11 @@ def _iter_files_recursive(root: str):
             subs = []
         for s in subs:
             p = s.get('full_path') or s.get('path')
-            if p:
+            if p and not _is_excluded(p):
                 stack.append(p)
 
 
-def search_files(folder_path, user_input):
+def search_files(folder_path, user_input, include_or_exclude_prefixes: Optional[List[str]] = None, use_include: bool = True):
     """指定フォルダ内でファイルを検索（再帰）"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
@@ -60,7 +90,10 @@ def search_files(folder_path, user_input):
     search_term = top_keyword['keyword']
     
     # 再帰でファイル一覧を取得
-    files = list(_iter_files_recursive(folder_path))
+    if use_include:
+        files = list(_iter_files_recursive(folder_path, include_prefixes=include_or_exclude_prefixes))
+    else:
+        files = list(_iter_files_recursive(folder_path, exclude_prefixes=include_or_exclude_prefixes))
     
     # ファイル名で検索
     search_results = []
@@ -75,13 +108,13 @@ def search_files(folder_path, user_input):
     return search_results
 
 
-def search_files_comprehensive(folder_path, user_input):
+def search_files_comprehensive(folder_path, user_input, include_or_exclude_prefixes: Optional[List[str]] = None, use_include: bool = True):
     """ファイル名と内容の両方で検索（再帰）"""
     # ファイル名検索
-    filename_results = search_files(folder_path, user_input)
+    filename_results = search_files(folder_path, user_input, include_or_exclude_prefixes, use_include)
     
     # ファイル内容検索
-    content_results = search_files_by_content(folder_path, user_input)
+    content_results = search_files_by_content(folder_path, user_input, include_or_exclude_prefixes, use_include)
     
     # 結果を統合（重複除去）
     all_results = filename_results + content_results
@@ -97,7 +130,7 @@ def search_files_comprehensive(folder_path, user_input):
     return unique_results
 
 
-def search_files_by_content(folder_path, user_input):
+def search_files_by_content(folder_path, user_input, include_or_exclude_prefixes: Optional[List[str]] = None, use_include: bool = True):
     """ファイル内容で検索（再帰）"""
     # キーワード抽出（関連度トップのみ）
     keywords = extract_keywords(user_input)
@@ -108,7 +141,10 @@ def search_files_by_content(folder_path, user_input):
     search_term = top_keyword['keyword']
     
     # 再帰でファイル一覧を取得
-    files = list(_iter_files_recursive(folder_path))
+    if use_include:
+        files = list(_iter_files_recursive(folder_path, include_prefixes=include_or_exclude_prefixes))
+    else:
+        files = list(_iter_files_recursive(folder_path, exclude_prefixes=include_or_exclude_prefixes))
     
     # ファイル内容で検索
     content_results = []

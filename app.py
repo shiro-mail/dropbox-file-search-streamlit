@@ -52,6 +52,17 @@ def _list_files_recursive(root_path: str):
 def _list_files_recursive_cached(root_path: str):
     return _list_files_recursive(root_path)
 
+def _is_excluded_path(p: str) -> bool:
+    try:
+        p = (p or "").rstrip('/')
+        for ex in st.session_state.get("excluded_folders", set()):
+            exn = (ex or "").rstrip('/')
+            if p == exn or p.startswith(exn + "/"):
+                return True
+        return False
+    except Exception:
+        return False
+
 def get_file_summary(file_path: str, file_name: str) -> str:
     """ファイル内容をOCRを含む抽出で取得し、短い日本語要約を返す。"""
     try:
@@ -129,6 +140,8 @@ if "file_content_preview_limit" not in st.session_state:
     st.session_state.file_content_preview_limit = 2000
 if "index_warned_for" not in st.session_state:
     st.session_state.index_warned_for = None
+if "included_folders" not in st.session_state:
+    st.session_state.included_folders = set()
 
 # DropBox APIでフォルダ取得
 base_path = ROOT_PATH  # 例: "/三友工業株式会社 Dropbox"
@@ -175,6 +188,13 @@ if folder_list:
         st.session_state.selected_folder_prev = selected_folder
         st.session_state.current_folder = selected_folder
         st.session_state.filtered_files = None
+        # 別フォルダの古いpathクエリをクリア
+        try:
+            _qp = st.query_params
+            if 'path' in _qp:
+                del _qp['path']
+        except Exception:
+            pass
     
     # 選択したフォルダ配下のサブフォルダとファイルをMain画面に表示
     if selected_folder:
@@ -186,7 +206,15 @@ if folder_list:
             if isinstance(_q_path, list):
                 _q_path = _q_path[0] if _q_path else None
             if _q_path:
-                st.session_state.current_folder = _q_path
+                sel = (selected_folder or "").rstrip('/')
+                if _q_path == sel or _q_path.startswith(sel + "/"):
+                    st.session_state.current_folder = _q_path
+                else:
+                    # 選択外のpathは無視し、削除
+                    try:
+                        del _qp['path']
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -227,20 +255,49 @@ if folder_list:
             st.markdown(f"##### 📄 ファイル（絞り込み結果）")
             st.info(f"🔍 検索結果: {len(files)}件のファイルが表示されています")
         else:
-            # サブフォルダ表示
+            # サブフォルダ表示（左に「対象に含める」チェックボックス）
             subfolders = get_subfolders(current_path)
             if subfolders:
                 st.markdown("##### 📁 サブフォルダ")
                 for i, folder in enumerate(subfolders):
-                    if st.button(f"📁 {folder['name']}", key=f"subfolder_{folder['full_path']}"):
-                        st.session_state.current_folder = folder['full_path']
-                        st.session_state.filtered_files = None
-                        _ensure_index_warning(st.session_state.current_folder)
-                        st.rerun()
+                    cols = st.columns([1, 8, 3])
+                    with cols[0]:
+                        key_cb = f"include_cb_{folder['full_path']}"
+                        checked = folder['full_path'] in st.session_state.included_folders
+                        new_val = st.checkbox("", value=checked, key=key_cb, help="チェックするとこのフォルダ配下のみを対象に含めます")
+                        # checkboxはkeyで状態保持されるため、集合も同期
+                        if new_val:
+                            st.session_state.included_folders.add(folder['full_path'])
+                        else:
+                            st.session_state.included_folders.discard(folder['full_path'])
+                    with cols[1]:
+                        if st.button(f"📁 {folder['name']}", key=f"subfolder_{folder['full_path']}"):
+                            st.session_state.current_folder = folder['full_path']
+                            st.session_state.filtered_files = None
+                            _ensure_index_warning(st.session_state.current_folder)
+                            st.rerun()
+                    with cols[2]:
+                        if folder['full_path'] in st.session_state.included_folders:
+                            st.caption("対象")
             
             # ファイル表示
             st.markdown(f"##### 📄 ファイル")
-            files = _list_files_recursive_cached(current_path) if st.session_state.get("show_recursive") else get_files_in_folder(current_path)
+            # 含める対象のみを反映してファイル一覧を取得
+            if st.session_state.get("show_recursive"):
+                files_all = _list_files_recursive_cached(current_path)
+            else:
+                files_all = get_files_in_folder(current_path)
+            def _is_included(p: str) -> bool:
+                incs = st.session_state.included_folders
+                if not incs:
+                    return True  # 未選択なら全て対象
+                p = (p or "").rstrip('/')
+                for inc in incs:
+                    incn = (inc or "").rstrip('/')
+                    if p == incn or p.startswith(incn + "/"):
+                        return True
+                return False
+            files = [f for f in (files_all or []) if _is_included(f.get('path') or '')]
         
         if files:
             st.write(f"ファイル数: {len(files)}個")
@@ -319,7 +376,8 @@ with st.sidebar.expander("インデックス" , expanded=False):
     if st.button("📚 このフォルダをインデックス化/更新"):
         with st.spinner("インデックスを作成/更新しています..."):
             target = st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)
-            build_index(target)
+            include = sorted(list(st.session_state.get("included_folders", set())))
+            build_index(target, include_prefixes=include)
             # n-gram（texts_ng）が空のケースを補完
             try:
                 backfilled = backfill_texts_ng()
@@ -383,9 +441,20 @@ if submitted:
             # hit: (id, path)
             p = str(hit[1])
             return p.startswith(target_folder + "/") if target_folder else True
-        fts_hits_f = [h for h in fts_hits if _in_folder(h)]
-        ng_hits_f = [h for h in ng_hits if _in_folder(h)]
-        vec_hits_f = [h for h in vec_hits if _in_folder(h)]
+        # 含めるフォルダでフィルタ
+        def _is_included_hit(hit):
+            p = (str(hit[1]) or '').rstrip('/')
+            incs = st.session_state.get('included_folders', set())
+            if not incs:
+                return True
+            for inc in incs:
+                incn = (inc or '').rstrip('/')
+                if p == incn or p.startswith(incn + '/'):
+                    return True
+            return False
+        fts_hits_f = [h for h in fts_hits if _in_folder(h) and _is_included_hit(h)]
+        ng_hits_f = [h for h in ng_hits if _in_folder(h) and _is_included_hit(h)]
+        vec_hits_f = [h for h in vec_hits if _in_folder(h) and _is_included_hit(h)]
 
         merged_ids = []
         for hid in [h[0] for h in fts_hits_f + ng_hits_f + vec_hits_f]:
@@ -417,10 +486,11 @@ if prompt:
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # 検索：現在表示中のフォルダを対象に実行
+        # 検索：現在表示中のフォルダを対象に実行（含めるフォルダ反映）
         current_path = (st.session_state.current_folder or selected_folder)
         if st.session_state.filtered_files is None:
-            results = search_files_comprehensive(current_path, prompt)
+            include = sorted(list(st.session_state.get("included_folders", set())))
+            results = search_files_comprehensive(current_path, prompt, include)
         else:
             results = search_from_filtered_files(st.session_state.filtered_files, prompt)
 
