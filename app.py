@@ -14,6 +14,7 @@ from urllib.parse import quote
 from indexer import build_index, search_fts, search_vector
 from indexer import search_fts_ng, search_fts_ng_exact, backfill_texts_ng, count_indexed_files_in
 from indexer import get_storage_bytes, reset_index, get_files_by_ids
+from indexer import is_index_locked, force_release_lock
 
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
@@ -174,12 +175,28 @@ if folder_list:
                 st.warning("このフォルダは未インデックスです。作成しますか？")
                 if st.button("📚 いま作成する", key=f"btn_build_index_{target_folder}"):
                     with st.spinner("インデックスを作成しています..."):
-                        build_index(target_folder)
+                        include = sorted(list(st.session_state.get("included_folders", set())))
+                        before = 0
+                        try:
+                            before = count_indexed_files_in(target_folder)
+                        except Exception:
+                            before = 0
+                        result = build_index(target_folder, include_prefixes=include)
                         try:
                             backfill_texts_ng()
                         except Exception:
                             pass
-                    st.success("インデックス作成が完了しました")
+                    try:
+                        if not result.get("started"):
+                            st.warning("別のインデックス処理が実行中のためスキップしました。しばらくしてから再試行してください。")
+                        else:
+                            after = count_indexed_files_in(target_folder)
+                            delta = max(0, after - before)
+                            st.success(
+                                f"インデックス作成が完了しました（新規 {delta} 件 / 追加 {result.get('indexed',0)} 件 / スキップ {result.get('skipped',0)} 件 / {result.get('duration_sec',0):.1f}s）"
+                            )
+                    except Exception:
+                        st.success("インデックス作成が完了しました")
         # 表示済みとして記録
         st.session_state.index_warned_for = target_folder
 
@@ -277,7 +294,13 @@ if folder_list:
                             _ensure_index_warning(st.session_state.current_folder)
                             st.rerun()
                     with cols[2]:
-                        if folder['full_path'] in st.session_state.included_folders:
+                        is_selected = folder['full_path'] in st.session_state.included_folders
+                        is_indexed = False
+                        try:
+                            is_indexed = count_indexed_files_in(folder['full_path']) > 0
+                        except Exception:
+                            is_indexed = False
+                        if is_selected or is_indexed:
                             st.caption("対象")
             
             # ファイル表示
@@ -314,30 +337,12 @@ if folder_list:
                         if file_content:
                             file_ext = os.path.splitext(file['name'])[-1].lower()
 
-                            # PDFは画像化してプレビュー
-                            if file_ext == '.pdf' and fitz is not None:
-                                images = []
-                                try:
-                                    with fitz.open(stream=file_content, filetype="pdf") as doc:
-                                        # 先頭3ページを画像化（必要に応じてページ数を変更）
-                                        for page_num in range(min(3, doc.page_count)):
-                                            page = doc.load_page(page_num)
-                                            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍解像度
-                                            images.append(pix.pil_tobytes(format="PNG"))
-                                    st.session_state.file_content_preview_images = images
-                                    st.session_state.file_content_preview = None  # テキストプレビューはクリア
-                                except Exception:
-                                    st.session_state.file_content_preview = "PDFの画像プレビューを生成できませんでした。"
-                                    st.session_state.file_content_preview_images = None
-
-                            # PDF以外（Word/Excel/TXT）は従来通りテキストプレビュー
-                            else:
-                                text = extract_text_simple(file_content, file['name'])
-                                # Excelは先頭5000文字、それ以外は2000文字
-                                preview_limit = 5000 if file_ext in ('.xls', '.xlsx') else 2000
-                                st.session_state.file_content_preview = text[:preview_limit] if text else "ファイルの内容を読み取れませんでした。"
-                                st.session_state.file_content_preview_images = None
-                                st.session_state.file_content_preview_limit = preview_limit
+                            # すべてテキストプレビュー（PDFも先頭5000文字）
+                            text = extract_text_simple(file_content, file['name'])
+                            preview_limit = 5000 if file_ext in ('.pdf', '.xls', '.xlsx') else 2000
+                            st.session_state.file_content_preview = text[:preview_limit] if text else "ファイルの内容を読み取れませんでした。"
+                            st.session_state.file_content_preview_images = None
+                            st.session_state.file_content_preview_limit = preview_limit
                     # サブフォルダ表示: 検索ヒットや再帰表示で現在フォルダ配下のサブフォルダにある場合だけ表示
                     try:
                         parent_dir = os.path.dirname(file['path'])
@@ -373,11 +378,43 @@ else:
 
 # サイドバー: インデックス操作
 with st.sidebar.expander("インデックス" , expanded=False):
+    # ロック状況を表示
+    try:
+        target = st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)
+        lock_status = is_index_locked(target)
+        if lock_status.get("locked"):
+            age = lock_status.get("age_sec", 0.0)
+            stale = lock_status.get("stale", False)
+            st.warning(f"別のインデックス処理が実行中（経過 {age/60:.1f} 分）")
+        # 常にロック解除ボタンを出す
+        if st.button("🔓 ロック解除", key="btn_force_unlock_any"):
+            if force_release_lock(target):
+                st.success("ロックを解除しました。再度インデックス化を実行できます。")
+            else:
+                st.error("ロック解除に失敗しました。")
+    except Exception:
+        pass
     if st.button("📚 このフォルダをインデックス化/更新"):
         with st.spinner("インデックスを作成/更新しています..."):
             target = st.session_state.current_folder or (folder_list[0] if folder_list else ROOT_PATH)
             include = sorted(list(st.session_state.get("included_folders", set())))
-            build_index(target, include_prefixes=include)
+            before = 0
+            try:
+                before = count_indexed_files_in(target)
+            except Exception:
+                before = 0
+            # 進捗バー（単一）
+            prog = st.progress(0, text="インデックス作成/更新を開始します...")
+            status_total = st.empty()
+            status = st.empty()
+            def _cb2(done: int, total: int, path: str):
+                pct = int((done/total)*100) if total else 100
+                prog.progress(pct, text=f"{done}/{total} {os.path.basename(path) if path else ''}")
+                if done == 0:
+                    status_total.write(f"対象ファイル: {total}件")
+                if path:
+                    status.write(f"処理中: {path}")
+            result = build_index(target, include_prefixes=include, progress_cb=_cb2)
             # n-gram（texts_ng）が空のケースを補完
             try:
                 backfilled = backfill_texts_ng()
@@ -385,7 +422,19 @@ with st.sidebar.expander("インデックス" , expanded=False):
                     st.sidebar.info(f"n-gramを{backfilled}件補完しました")
             except Exception:
                 pass
-        st.success("インデックス更新が完了しました")
+        # 結果に応じて表示（実行中は下部に進捗の見方も案内）
+        try:
+            if not result.get("started"):
+                st.warning("別のインデックス処理が実行中のためスキップしました。しばらくしてから再試行してください。")
+            else:
+                after = count_indexed_files_in(target)
+                delta = max(0, after - before)
+                st.success(
+                    f"インデックス更新が完了しました（新規 {delta} 件 / 追加 {result.get('indexed',0)} 件 / スキップ {result.get('skipped',0)} 件 / {result.get('duration_sec',0):.1f}s）"
+                )
+                st.caption("実行中の詳細は、ターミナルに [indexer] ログが逐次出力されます（INDEX_DEBUG=1）。")
+        except Exception:
+            st.success("インデックス更新が完了しました")
 
     # 追加: 容量表示と全削除
     sizes = get_storage_bytes()
@@ -461,20 +510,33 @@ if submitted:
             if hid not in merged_ids:
                 merged_ids.append(hid)
         if merged_ids:
-            st.sidebar.info(f"インデックス検索ヒット: {len(merged_ids)} 件")
+            # メイン画面に結果を表示できるよう、絞り込みリストに反映
+            try:
+                files_found = get_files_by_ids(merged_ids)
+            except Exception:
+                files_found = []
+
+            # 既にリストがある場合は、その中からさらに絞り込み
+            if st.session_state.get("filtered_files") is not None:
+                allowed = {f.get('path') for f in st.session_state.filtered_files or []}
+                files_filtered = [f for f in files_found if f.get('path') in allowed]
+                st.sidebar.info(f"絞り込みヒット: {len(files_filtered)} 件（候補 {len(files_found)} 件）")
+                st.session_state.filtered_files = files_filtered
+            else:
+                st.sidebar.info(f"インデックス検索ヒット: {len(files_found)} 件")
+                st.session_state.filtered_files = files_found
+
             st.sidebar.caption(
                 f"FTS: {len(fts_hits_f)}件 ({(t1-t0)*1000:.0f}ms) / "
                 f"n-gram: {len(ng_hits_f)}件 ({(t2-t1)*1000:.0f}ms) / "
                 f"Vector: {len(vec_hits_f)}件 ({(t3-t2)*1000:.0f}ms)"
             )
-            # メイン画面に結果を表示できるよう、絞り込みリストに反映
-            try:
-                st.session_state.filtered_files = get_files_by_ids(merged_ids)
-            except Exception:
-                st.session_state.filtered_files = []
         else:
             st.sidebar.info("インデックスにヒットしませんでした")
             st.session_state.filtered_files = []
+
+        # メインエリアに結果を反映するため即時再描画
+        st.rerun()
 
 
 # 指示ボックス
@@ -514,13 +576,8 @@ if st.session_state.selected_file:
 
     file_ext = os.path.splitext(display_name)[-1].lower()
 
-    # PDFは画像（複数ページ）を縦に表示
-    if file_ext == '.pdf' and st.session_state.file_content_preview_images:
-        for i, img_bytes in enumerate(st.session_state.file_content_preview_images):
-            st.image(img_bytes, caption=f"ページ {i+1}", use_container_width=True)
-
-    # それ以外はテキスト
-    elif st.session_state.file_content_preview:
+    # テキストプレビュー（PDF含む）
+    if st.session_state.file_content_preview:
         st.text_area(
             f"ファイル内容（先頭{st.session_state.file_content_preview_limit}文字）",
             value=st.session_state.file_content_preview,

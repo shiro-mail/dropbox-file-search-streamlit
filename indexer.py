@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 import errno
-from typing import Iterable, List, Tuple, Optional
+from typing import Iterable, List, Tuple, Optional, Callable
 from datetime import datetime
 import time
 
@@ -147,6 +147,7 @@ class VectorStore:
 vec_store = VectorStore(EMB_DIM, VEC_DIR)
 
 DEBUG_INDEX = os.getenv("INDEX_DEBUG", "0") == "1"
+LOCK_MAX_AGE_SEC = int(os.getenv("INDEX_LOCK_MAX_AGE_SEC", "600"))  # 既定10分
 
 def _iter_files_recursive(root: str, exclude_prefixes: Optional[List[str]] = None):
     """指定ルート配下のファイルを（サブフォルダも含めて）逐次取得。
@@ -255,12 +256,27 @@ def _lock_path_for(folder: str) -> Path:
     return LOCK_DIR / f"index_{safe}.lock"
 
 
+def _is_lock_stale(lock_path: Path, max_age_sec: int = LOCK_MAX_AGE_SEC) -> bool:
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+        return age > max_age_sec
+    except Exception:
+        return True
+
+
 def _acquire_lock(folder: str) -> Optional[Path]:
-    """Create an exclusive lock file for the folder. Returns lock path or None if exists."""
+    """Create an exclusive lock file for the folder. Returns lock path or None if exists and fresh."""
     lp = _lock_path_for(folder)
+    # 既存ロックが古い場合は回収
+    if lp.exists() and _is_lock_stale(lp, max_age_sec=LOCK_MAX_AGE_SEC):
+        try:
+            lp.unlink()
+        except Exception:
+            pass
     try:
         fd = os.open(str(lp), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"pid={os.getpid()} ts={int(time.time())}\n")
         return lp
     except FileExistsError:
         return None
@@ -273,24 +289,53 @@ def _release_lock(lock_path: Path) -> None:
         pass
 
 
+def is_index_locked(folder: str) -> dict:
+    """Return lock status for a folder. {locked: bool, age_sec: float}"""
+    lp = _lock_path_for(folder)
+    if not lp.exists():
+        return {"locked": False, "age_sec": 0.0}
+    try:
+        age = time.time() - lp.stat().st_mtime
+    except Exception:
+        age = -1.0
+    # 古ければlocked=False扱いにしてよいが、UIでは解除ボタンを出すためlockedとして返す
+    return {"locked": True, "age_sec": age, "stale": _is_lock_stale(lp, LOCK_MAX_AGE_SEC)}
+
+
+def force_release_lock(folder: str) -> bool:
+    lp = _lock_path_for(folder)
+    try:
+        lp.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
 def build_index(
     dropbox_folder: str,
     recursive: bool = True,
     exclude_prefixes: Optional[List[str]] = None,
     include_prefixes: Optional[List[str]] = None,
-) -> None:
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+) -> dict:
     """指定フォルダ配下のファイルをダウンロード→抽出→インデックス化（FTS/FAISS）。
     recursive=True でサブフォルダも含めて再帰的に処理します。
     """
     # 二重起動防止用ロック
     lock = _acquire_lock(dropbox_folder)
     if lock is None:
-        print(f"[indexer] Skip: index build already running for {dropbox_folder}")
-        return
+        # 既に実行中、または中断によりロックが残っている
+        if DEBUG_INDEX:
+            print(f"[indexer] Skip: index build already running for {dropbox_folder}", flush=True)
+        return {"started": False, "reason": "locked"}
     try:
         init_schema()
         con = _connect()
         cur = con.cursor()
+
+        start_ts = time.perf_counter()
+        num_indexed = 0
+        num_skipped = 0
 
         if recursive:
             if include_prefixes:
@@ -321,6 +366,14 @@ def build_index(
                 if ok:
                     files.append(f)
 
+        total = len(files)
+        done = 0
+        if progress_cb is not None:
+            try:
+                progress_cb(0, total, "")
+            except Exception:
+                pass
+
         for f in files:
             path = f["path"]
             modified = f["modified"].isoformat() if hasattr(f["modified"], "isoformat") else str(f["modified"])  # type: ignore
@@ -339,11 +392,19 @@ def build_index(
                 has_ng = bool(cur.fetchone())
                 if has_nonempty_text and has_ng:
                     if DEBUG_INDEX:
-                        print(f"[indexer] skip (up-to-date): {path}")
+                        print(f"[indexer] skip (up-to-date): {path}", flush=True)
+                    num_skipped += 1
+                    done += 1
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(done, total, path)
+                        except Exception:
+                            pass
                     continue
 
             content_bytes = download_file_content(path)
             if not content_bytes:
+                num_skipped += 1
                 continue
             raw_text = extract_text_simple(content_bytes, f["name"]) or ""
             file_id = _upsert_file(con, path, modified, size, ext)
@@ -357,10 +418,19 @@ def build_index(
             if head.strip():
                 vec_store.add(file_id, head)
             if DEBUG_INDEX:
-                print(f"[indexer] indexed: {path}")
+                print(f"[indexer] indexed: {path}", flush=True)
+            num_indexed += 1
+            done += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total, path)
+                except Exception:
+                    pass
         con.commit()
         con.close()
         vec_store.save()
+        duration = time.perf_counter() - start_ts
+        return {"started": True, "indexed": num_indexed, "skipped": num_skipped, "duration_sec": duration, "total": total}
     finally:
         _release_lock(lock)
 
