@@ -121,6 +121,8 @@ if "current_folder" not in st.session_state:
     st.session_state.current_folder = None
 if "selected_folder_prev" not in st.session_state:
     st.session_state.selected_folder_prev = None
+if "file_content_preview_limit" not in st.session_state:
+    st.session_state.file_content_preview_limit = 2000
 
 # DropBox APIでフォルダ取得
 base_path = ROOT_PATH  # 例: "/三友工業株式会社 Dropbox"
@@ -258,8 +260,11 @@ if folder_list:
                             # PDF以外（Word/Excel/TXT）は従来通りテキストプレビュー
                             else:
                                 text = extract_text_simple(file_content, file['name'])
-                                st.session_state.file_content_preview = text[:2000] if text else "ファイルの内容を読み取れませんでした。"
+                                # Excelは先頭5000文字、それ以外は2000文字
+                                preview_limit = 5000 if file_ext in ('.xls', '.xlsx') else 2000
+                                st.session_state.file_content_preview = text[:preview_limit] if text else "ファイルの内容を読み取れませんでした。"
                                 st.session_state.file_content_preview_images = None
+                                st.session_state.file_content_preview_limit = preview_limit
                     # サブフォルダ表示: 検索ヒットや再帰表示で現在フォルダ配下のサブフォルダにある場合だけ表示
                     try:
                         parent_dir = os.path.dirname(file['path'])
@@ -412,7 +417,7 @@ if st.session_state.selected_file:
     # それ以外はテキスト
     elif st.session_state.file_content_preview:
         st.text_area(
-            "ファイル内容（先頭2000文字）",
+            f"ファイル内容（先頭{st.session_state.file_content_preview_limit}文字）",
             value=st.session_state.file_content_preview,
             height=500,
             disabled=True
