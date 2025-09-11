@@ -49,12 +49,16 @@ def init_schema() -> None:
     cur.execute(
         "CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, path TEXT UNIQUE, modified TEXT, size INTEGER, ext TEXT)"
     )
+    # 本文実体（1箇所のみ）
     cur.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS texts USING fts5(content, file_id UNINDEXED, tokenize='unicode61')"
+        "CREATE TABLE IF NOT EXISTS contents (file_id INTEGER PRIMARY KEY, content TEXT)"
+    )
+    cur.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS texts USING fts5(content, tokenize='unicode61', content='')"
     )
     # 日本語向け: 2-gram を事前生成して登録するテーブル
     cur.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS texts_ng USING fts5(content, file_id UNINDEXED, tokenize='unicode61')"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS texts_ng USING fts5(content, tokenize='unicode61', content='')"
     )
     con.commit()
     con.close()
@@ -73,14 +77,20 @@ def _upsert_file(con: sqlite3.Connection, path: str, modified: str, size: int, e
 
 def _upsert_text(con: sqlite3.Connection, file_id: int, content: str) -> None:
     cur = con.cursor()
-    cur.execute("DELETE FROM texts WHERE file_id=?", (file_id,))
-    cur.execute("INSERT INTO texts(content, file_id) VALUES(?,?)", (content, file_id))
+    # 本文は通常テーブルに集約
+    cur.execute(
+        "INSERT INTO contents(file_id, content) VALUES(?,?) ON CONFLICT(file_id) DO UPDATE SET content=excluded.content",
+        (file_id, content),
+    )
+    # FTS（contentless）は rowid=files.id でインデックスを更新
+    cur.execute("DELETE FROM texts WHERE rowid=?", (file_id,))
+    cur.execute("INSERT INTO texts(rowid, content) VALUES(?,?)", (file_id, content))
 
 
 def _upsert_text_ng(con: sqlite3.Connection, file_id: int, content: str) -> None:
     cur = con.cursor()
-    cur.execute("DELETE FROM texts_ng WHERE file_id=?", (file_id,))
-    cur.execute("INSERT INTO texts_ng(content, file_id) VALUES(?,?)", (content, file_id))
+    cur.execute("DELETE FROM texts_ng WHERE rowid=?", (file_id,))
+    cur.execute("INSERT INTO texts_ng(rowid, content) VALUES(?,?)", (file_id, content))
 
 
 # 2-gram 生成（重複あり、スペース区切り）
@@ -181,7 +191,7 @@ def _compose_index_text(filename: str, content: str) -> str:
 
 
 def backfill_texts_ng(batch_size: int = 1000) -> int:
-    """texts_ng が空、または不足している場合に、files/texts から後追いで補完する。
+    """texts_ng が空、または不足している場合に、files/contents から後追いで補完する。
     既存DBに texts_ng が未作成だった履歴があるとカウント0のままになるための救済。
     戻り値は補完した件数。
     """
@@ -192,11 +202,11 @@ def backfill_texts_ng(batch_size: int = 1000) -> int:
     while True:
         cur.execute(
             """
-            SELECT f.id, f.path, t.content
+            SELECT f.id, f.path, c.content
             FROM files f
-            JOIN texts t ON t.file_id = f.id
-            LEFT JOIN texts_ng n ON n.file_id = f.id
-            WHERE n.file_id IS NULL
+            JOIN contents c ON c.file_id = f.id
+            LEFT JOIN texts_ng n ON n.rowid = f.id
+            WHERE n.rowid IS NULL
             LIMIT ?
             """,
             (batch_size,),
@@ -266,14 +276,14 @@ def build_index(dropbox_folder: str, recursive: bool = True) -> None:
             ext = os.path.splitext(f["name"])[-1].lower()
 
             # 既存メタと一致時は、空テキストやn-gram未登録なら再作成。それ以外はスキップ
-            cur.execute("SELECT id, modified, size, ext FROM files WHERE path=?", (path,))
+            cur.execute("SELECT id, modified, size, ext FROM files WHERE path= ?", (path,))
             row = cur.fetchone()
             if row and str(row[1]) == modified and int(row[2]) == size and str(row[3]) == ext:
                 file_id_existing = int(row[0])
-                cur.execute("SELECT COALESCE(length(content),0) FROM texts WHERE file_id=?", (file_id_existing,))
+                cur.execute("SELECT COALESCE(length(content),0) FROM contents WHERE file_id= ?", (file_id_existing,))
                 len_row = cur.fetchone()
                 has_nonempty_text = bool(len_row and int(len_row[0]) > 0)
-                cur.execute("SELECT 1 FROM texts_ng WHERE file_id=?", (file_id_existing,))
+                cur.execute("SELECT 1 FROM texts_ng WHERE rowid= ?", (file_id_existing,))
                 has_ng = bool(cur.fetchone())
                 if has_nonempty_text and has_ng:
                     if DEBUG_INDEX:
@@ -310,12 +320,12 @@ def search_fts(query: str, limit: int = 20, folder_prefix: Optional[str] = None)
     if folder_prefix:
         like = folder_prefix.rstrip("/") + "/%"
         cur.execute(
-            "SELECT files.id, files.path FROM texts JOIN files ON texts.file_id=files.id WHERE texts MATCH ? AND files.path LIKE ? LIMIT ?",
+            "SELECT files.id, files.path FROM texts JOIN files ON files.id = texts.rowid WHERE texts MATCH ? AND files.path LIKE ? LIMIT ?",
             (query, like, limit),
         )
     else:
         cur.execute(
-            "SELECT files.id, files.path FROM texts JOIN files ON texts.file_id=files.id WHERE texts MATCH ? LIMIT ?",
+            "SELECT files.id, files.path FROM texts JOIN files ON files.id = texts.rowid WHERE texts MATCH ? LIMIT ?",
             (query, limit),
         )
     rows = cur.fetchall()
@@ -337,12 +347,12 @@ def search_fts_ng(query: str, limit: int = 20, folder_prefix: Optional[str] = No
     if folder_prefix:
         like = folder_prefix.rstrip("/") + "/%"
         cur.execute(
-            "SELECT files.id, files.path FROM texts_ng JOIN files ON texts_ng.file_id=files.id WHERE texts_ng MATCH ? AND files.path LIKE ? LIMIT ?",
+            "SELECT files.id, files.path FROM texts_ng JOIN files ON files.id = texts_ng.rowid WHERE texts_ng MATCH ? AND files.path LIKE ? LIMIT ?",
             (q, like, limit),
         )
     else:
         cur.execute(
-            "SELECT files.id, files.path FROM texts_ng JOIN files ON texts_ng.file_id=files.id WHERE texts_ng MATCH ? LIMIT ?",
+            "SELECT files.id, files.path FROM texts_ng JOIN files ON files.id = texts_ng.rowid WHERE texts_ng MATCH ? LIMIT ?",
             (q, limit),
         )
     rows = cur.fetchall()
@@ -368,9 +378,9 @@ def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str
                 (
                     "SELECT files.id, files.path "
                     "FROM texts_ng "
-                    "JOIN files ON texts_ng.file_id=files.id "
-                    "JOIN texts ON texts.file_id=files.id "
-                    "WHERE texts_ng MATCH ? AND instr(texts.content, ?) > 0 AND files.path LIKE ? "
+                    "JOIN files ON texts_ng.rowid = files.id "
+                    "JOIN contents c ON c.file_id = files.id "
+                    "WHERE texts_ng MATCH ? AND instr(c.content, ?) > 0 AND files.path LIKE ? "
                     "LIMIT ?"
                 ),
                 (q, query, like, limit),
@@ -380,9 +390,9 @@ def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str
                 (
                     "SELECT files.id, files.path "
                     "FROM texts_ng "
-                    "JOIN files ON texts_ng.file_id=files.id "
-                    "JOIN texts ON texts.file_id=files.id "
-                    "WHERE texts_ng MATCH ? AND instr(texts.content, ?) > 0 "
+                    "JOIN files ON texts_ng.rowid = files.id "
+                    "JOIN contents c ON c.file_id = files.id "
+                    "WHERE texts_ng MATCH ? AND instr(c.content, ?) > 0 "
                     "LIMIT ?"
                 ),
                 (q, query, limit),
@@ -394,8 +404,8 @@ def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str
             cur.execute(
                 (
                     "SELECT files.id, files.path "
-                    "FROM texts JOIN files ON texts.file_id=files.id "
-                    "WHERE instr(texts.content, ?) > 0 AND files.path LIKE ? "
+                    "FROM contents c JOIN files ON c.file_id = files.id "
+                    "WHERE instr(c.content, ?) > 0 AND files.path LIKE ? "
                     "LIMIT ?"
                 ),
                 (query, like, limit),
@@ -404,8 +414,8 @@ def search_fts_ng_exact(query: str, limit: int = 20, folder_prefix: Optional[str
             cur.execute(
                 (
                     "SELECT files.id, files.path "
-                    "FROM texts JOIN files ON texts.file_id=files.id "
-                    "WHERE instr(texts.content, ?) > 0 "
+                    "FROM contents c JOIN files ON c.file_id = files.id "
+                    "WHERE instr(c.content, ?) > 0 "
                     "LIMIT ?"
                 ),
                 (query, limit),
@@ -459,3 +469,55 @@ def count_indexed_files_in(folder: str) -> int:
         n = int(row[0]) if row else 0
     con.close()
     return n
+
+
+def get_storage_bytes() -> dict:
+    """インデックス関連ファイルのサイズをバイトで返す。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    def size_of(p: Path) -> int:
+        try:
+            return p.stat().st_size
+        except FileNotFoundError:
+            return 0
+    sqlite_b = size_of(FTS_PATH)
+    wal_b = size_of(FTS_PATH.with_suffix(FTS_PATH.suffix + "-wal"))
+    shm_b = size_of(FTS_PATH.with_suffix(FTS_PATH.suffix + "-shm"))
+    vec_b = 0
+    if VEC_DIR.exists():
+        for child in VEC_DIR.glob("**/*"):
+            if child.is_file():
+                vec_b += size_of(child)
+    total = sqlite_b + wal_b + shm_b + vec_b
+    return {"sqlite": sqlite_b, "wal": wal_b, "shm": shm_b, "vector": vec_b, "total": total}
+
+
+def reset_index() -> int:
+    """インデックス（SQLite/FTS/FAISS/ロック）を全削除し、解放バイト数を返す。"""
+    before = get_storage_bytes().get("total", 0)
+    # 既存接続は呼び出し側で閉じられている前提
+    for p in [FTS_PATH, FTS_PATH.with_suffix(FTS_PATH.suffix + "-wal"), FTS_PATH.with_suffix(FTS_PATH.suffix + "-shm")]:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+    # ベクター
+    if VEC_DIR.exists():
+        for child in VEC_DIR.glob("**/*"):
+            try:
+                if child.is_file():
+                    child.unlink()
+            except Exception:
+                pass
+    # ロック
+    if LOCK_DIR.exists():
+        for child in LOCK_DIR.glob("index_*.lock"):
+            try:
+                child.unlink()
+            except Exception:
+                pass
+    # 再初期化
+    init_schema()
+    after = get_storage_bytes().get("total", 0)
+    return max(0, before - after)

@@ -13,6 +13,7 @@ from keyword_extractor import extract_keywords
 from urllib.parse import quote
 from indexer import build_index, search_fts, search_vector
 from indexer import search_fts_ng, search_fts_ng_exact, backfill_texts_ng, count_indexed_files_in
+from indexer import get_storage_bytes, reset_index
 
 
 ROOT_PATH = getattr(config, "ROOT_PATH", "")
@@ -278,6 +279,19 @@ with st.sidebar.expander("インデックス" , expanded=False):
             except Exception:
                 pass
         st.success("インデックス更新が完了しました")
+
+    # 追加: 容量表示と全削除
+    sizes = get_storage_bytes()
+    def _fmt(b):
+        return f"{b/1024/1024:.1f} MB"
+    st.caption(
+        f"容量: SQLite {_fmt(sizes.get('sqlite',0))} / WAL {_fmt(sizes.get('wal',0))} / SHM {_fmt(sizes.get('shm',0))} / Vector {_fmt(sizes.get('vector',0))} / 合計 {_fmt(sizes.get('total',0))}"
+    )
+    if st.button("🗑 全インデックス削除（サイズ解放）"):
+        with st.spinner("インデックスを削除しています..."):
+            freed = reset_index()
+        st.success(f"削除完了。解放: {_fmt(freed)}")
+
 
 # サイドバー: 高速検索（インデックス）を常時表示
 st.sidebar.markdown("### 高速検索（インデックス）")
